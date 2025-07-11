@@ -1,6 +1,6 @@
 {
   "name": "@danielfroz/eventbus",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "EventBus library for event-driven architecture services",
   "license": "MIT",
   "exports": {
@@ -9,6 +9,7 @@
     "./redis": "./src/redis/mod.ts"
   },
   "imports": {
+    "@danielfroz/slog": "jsr:@danielfroz/slog@^0.2.3",
     "asserts": "https://deno.land/std@0.116.0/testing/asserts.ts"
   },
   "compilerOptions": {

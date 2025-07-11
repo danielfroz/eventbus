@@ -1,9 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
+import { ConsoleLog } from "@danielfroz/slog";
 import * as NATSJ from 'jsr:@nats-io/jetstream@3.1.0';
 import * as NATS from 'jsr:@nats-io/nats-core@3.1.0';
 import * as NATSC from 'jsr:@nats-io/transport-deno@3.1.0';
-import type { Config, Event, EventBus, EventHandler, HandlerErrorArgs } from '../mod.ts';
-import { ArgumentError, EventHandlerError, HandlerError, InitError, NetworkError } from "../mod.ts";
+import type { Config, Event, EventBus, EventHandler } from '../mod.ts';
+import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts";
 
 export interface EventBusJetstreamConfig {
   servers: string[]
@@ -71,13 +72,17 @@ export class EventBusJetstream implements EventBus {
       // nothing to be done here...
       return
     }
-    
+
+    // strict check as we must have configuration in place
+    if(!config.errorHandler) {
+      throw new InitError('config.errorHandler.required')
+    }
     if(!config.handlers) {
-      throw new InitError(`consuming defined but no handler was set`)
+      throw new InitError(`config.handlers.required`)
     }
     
     try {
-      const name = config.producer
+      const producer = config.producer
       // initialize headers
       for(const h of config.handlers) {
         this.handlers.set(h.type, h)
@@ -99,12 +104,12 @@ export class EventBusJetstream implements EventBus {
           continue
         }
         const cis = await jsm.consumers.list(stream).next()
-        const existing = cis?.find(x => x.config.name === name)
+        const existing = cis?.find(x => x.config.name === producer)
         if(!existing) {
           // create consumer for this stream
           await jsm.consumers.add(stream, {
-            name,
-            durable_name: name,
+            name: producer,
+            durable_name: producer,
             filter_subject: `${stream}`,
             ack_policy: NATSJ.AckPolicy.Explicit,
             deliver_policy: NATSJ.DeliverPolicy.New,
@@ -117,16 +122,8 @@ export class EventBusJetstream implements EventBus {
         if(!existingStreams.has(stream)) {
           continue
         }
-        const consumer = await this.jsc.consumers.get(stream, name)
+        const consumer = await this.jsc.consumers.get(stream, producer)
         consumers.push({ stream, consumer })
-      }
-
-      const handlerError = (args: HandlerErrorArgs): Promise<void> => {
-        return new Promise((resolve, _r) => {
-          if(config.error)
-            config.error(new HandlerError(args))
-          return resolve()
-        })
       }
 
       this.intervals = new Array<number>()
@@ -136,53 +133,76 @@ export class EventBusJetstream implements EventBus {
           for(const c of consumers) {
             const { stream, consumer } = c
 
+            // helper
+            const handleError = async (args: { message: string, producer?: string, event?: Event, stack?: string }) => {
+              const { message, event, stack } = args
+              if(config.errorHandler) {
+                await config.errorHandler(new EventHandlerError({
+                  message,
+                  stream,
+                  producer,
+                  event,
+                  stack,
+                }))
+              }
+            }
+
             const msgs = await consumer.fetch({ expires: 2000 })
             for await (const msg of msgs) {
+              // deno-lint-ignore require-await
+              const ack = async () => {
+                msg.ack()
+              }
 
               const json = new TextDecoder().decode(msg.data)
               const event = config.decode ? 
                 await config.decode(json):
                 JSON.parse(json) as Event
 
-              if(event == null) {
-                await handlerError({ stream, group: name, message: 'event.invalid', data: undefined })
+              if(!event) {
+                await handleError({ message: 'event.required' })
+                await ack()
                 continue
               }
               if(!event.type) {
-                await handlerError({ stream, group: name, message: 'event.type.invalid', data: event })
+                await handleError({ message: 'event.type.required', event })
+                await ack()
                 continue
               }
               if(!event.sid) {
-                await handlerError({ stream, group: name, message: 'event.sid.invalid', data: event })
+                await handleError({ message: 'event.sid.required'})
+                await ack()
                 continue
               }
               if(!event.id) {
-                await handlerError({ stream, group: name, message: 'event.id.invalid', data: event })
-                continue
+                await handleError({ message: 'event.id.required', event })
+                await ack()
+                continue;
               }
               if(!event.ts) {
-                await handlerError({ stream, group: name, message: 'event.ts.invalid', data: event })
+                await handleError({ message: 'event.ts.required', event })
+                await ack()
                 continue
               }
+
               const handler = this.handlers.get(event.type)
               if(!handler) {
+                if(config.log)
+                  config.log.trace({ msg: `no handler for event: ${event.type}` })
+                await ack()
                 continue
               }
-              handler.handle(event)
-                .then(() => msg.ack())
-                .catch((err: Error) => {
-                  if(config.errorHandler) {
-                    config.errorHandler(new EventHandlerError({
-                      error: err,
-                      event,
-                      producer: handler.constructor.name,
-                      stream: handler.type,
-                      stack: `${err.stack}`,
-                    }))
-                  }
+
+              if(config.log) {
+                config.log.trace({ msg: 'exec handler', stream, instance: config.instance, handler: handler.constructor.name, event })
+              }
+
+              await handler.handle(event)
+                .catch(async (err: Error) => {
+                  await handleError({ message: err.message, stack: `${err.stack}`, event })
                 })
-                .finally(() => {
-                  msg.ack()
+                .finally(async () => {
+                  await ack()
                 })
             }
           } // !for
@@ -206,6 +226,8 @@ export class EventBusJetstream implements EventBus {
       config.instance = `${config.producer}.${Math.floor(Date.now() / 1000)}`
 
     this.iconfig = config
+    if(!config.log)
+      config.log = new ConsoleLog({ init: { service: 'eventbus.jetstream' }})
     try {
       await this._initPublisher(config)
       await this._initConsumers(config)

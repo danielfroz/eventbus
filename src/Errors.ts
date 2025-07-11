@@ -36,51 +36,36 @@ export class NetworkError extends EventBusError {
 
   constructor(args: NetworkErrorArgs) {
     super(args.message)
-    this.producer = 'NetworkError'
+    this.name = 'NetworkError'
+
     this.producer = args.producer
     this.instance = args.instance
     this.stack = args.stack
   }
 }
 
-export type HandlerErrorArgs = {
-  message: string
-  stream: string
-  group: string
-  data?: unknown
-}
-export class HandlerError extends EventBusError {
-  stream: string
-  group: string
-  data?: unknown
-
-  constructor(args: HandlerErrorArgs) {
-    super(args.message)
-    this.name = 'HandleError'
-    this.stream = args.stream
-    this.group = args.group
-    this.data = args.data
-  }
-}
-
 export type EventHandlerErrorArgs = {
-  error: Error
-  event: Event
+  /** basic error data */
+  message: string
+  stack?: string
+  /** eventbus specific data */
   producer: string
   stream: string
-  stack: string
+  event?: Event
 }
 export class EventHandlerError extends EventBusError {
-  event: Event
   producer: string
   stream: string
-  
+  event?: Event
+
   constructor(readonly args: EventHandlerErrorArgs) {
-    super(args.error.message)
+    super(args.message)
     this.name = 'EventHandlerError'
-    this.event = args.event
+    if(args.stack)
+      this.stack = args.stack
+
     this.producer = args.producer
     this.stream = args.stream
-    this.stack = args.stack
+    this.event = args.event
   }
 }

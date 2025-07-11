@@ -1,3 +1,4 @@
+import type { Log } from '@danielfroz/slog'
 import type { Event, EventBusError, EventHandler, EventHandlerError } from './mod.ts'
 
 export interface Config {
@@ -35,4 +36,8 @@ export interface Config {
    * handler thrown by EventHandlers
    */
   errorHandler?: (error: EventHandlerError) => Promise<void>
+  /**
+   * LoggerFactory from Slog
+   */
+  log?: Log
 }

@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import * as r from 'jsr:@db/redis@0.40.0'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
-import { ArgumentError, EventHandlerError, HandlerError, InitError, NetworkError } from "../mod.ts"
+import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts"
 import type * as i from './mod.ts'
 
 export interface EventBusRedisConfig {
@@ -88,11 +88,15 @@ export class EventBusRedis implements EventBus {
       return
     }
 
+
+    // must declare errorHandler!
+    if(!config.errorHandler) {
+      throw new InitError('config.errorHandler.required')
+    }
     // then consumers are configured...
     // if no handler... thrown an Error
-    this.credis = await connect()
     if(!config.handlers) {
-      throw new ArgumentError('config.handlers')
+      throw new InitError('config.handlers.required')
     }
 
     if(config.handlers) {
@@ -107,6 +111,7 @@ export class EventBusRedis implements EventBus {
       }
     }
   
+    this.credis = await connect()
     // this is used when reading from groups...
     const streams = new Array<r.XKeyIdGroup>()
     if(config.consuming) {
@@ -121,16 +126,6 @@ export class EventBusRedis implements EventBus {
         }
         streams.push({ key: stream, xid: '>' })
       }
-    }
-  
-    const throwError = (stream: string, group: string, message: string): Promise<void> => {
-      if(config.error)
-        config.error(new HandlerError({
-          message,
-          stream,
-          group,
-        }))
-      return Promise.resolve()
     }
   
     this.running = false
@@ -157,86 +152,91 @@ export class EventBusRedis implements EventBus {
         return 
       }
 
-      // const promisesHandlers = new Array<{handler: EventHandler<c.Events.Event>, event: c.Events.Event}> ()
-      const promises = new Array<Promise<void>>()
-      for(const reply of result) {
-        const stream = reply.key
-        const messages = reply.messages
-        for(const message of messages) {
-          const content = message.fieldValues['content']
-          if(content == null) {
-            await throwError(stream, name, 'message.content required')
-            await this.credis?.xack(stream, name, message.xid)
-            continue
+      try {
+        for(const reply of result) {
+          const stream = reply.key
+          const messages = reply.messages
+
+          const handleError = async (args: { message: string, producer?: string, event?: Event, stack?: string }) => {
+            const { message, event, stack } = args
+            if(config.errorHandler) {
+              await config.errorHandler(new EventHandlerError({
+                message,
+                stream,
+                producer,
+                event,
+                stack
+              }))
+            }
           }
 
-          const event = config.decode ? 
-            await config.decode(content):
-            JSON.parse(content) as Event
+          for(const message of messages) {
+            const ack = async () => {
+              await this.credis?.xack(stream, name, message.xid)
+            }
 
-          if(!event) {
-            await throwError(stream, name, 'message.event.required')
-            await this.credis?.xack(stream, name, message.xid)
-            continue
-          }
-          if(!event.type) {
-            await throwError(stream, name, 'message.event.type.required')
-            await this.credis?.xack(stream, name, message.xid)
-            continue
-          }
-          if(!event.sid) {
-            await throwError(stream, name, 'message.event.sid.required')
-            await this.credis?.xack(stream, name, message.xid)
-            continue
-          }
-          if(!event.id) {
-            await throwError(stream, name, 'message.event.id.required')
-            await this.credis?.xack(stream, name, message.xid)
-            continue;
-          }
-          if(!event.ts) {
-            await throwError(stream, name, 'message.event.ts.required')
-            await this.credis?.xack(stream, name, message.xid)
-            continue
-          }
+            const content = message.fieldValues['content']
+            if(content == null) {
+              await handleError({ message: 'message.content.required' })
+              await ack()
+              continue
+            }
 
-          const handler = this.handlers.get(event.type)
-          if(!handler) {
-            // console.info(`EventBusRedis; name: ${name}, stream: ${stream}; no handler for event ${JSON.stringify(event)}`)
-            await this.credis?.xack(stream, name, message.xid)
-            continue
-          }
+            const event = config.decode ? 
+              await config.decode(content):
+              JSON.parse(content) as Event
 
-          // if(this.rconfig?.trace) {
-          //   console.log('eventbus [trace] consumer: %o; stream: %o; handler: %o; event: %o', 
-          //     instance, stream, handler.constructor.name, event)
-          // }
-          
-          const p = handler
-            .handle(event)
-            .catch((err: Error) => {
-              // console.error('EventBusRedis: handler catch: %o', e)
-              if(this.iconfig && this.iconfig.errorHandler) {
-                this.iconfig.errorHandler(new EventHandlerError({
-                  error: err,
-                  event,
-                  producer: handler.constructor.name,
-                  stream: handler.type,
-                  stack: `${err.stack}`
-                }))
-              }
-            })
-            .finally(() => {
-              if(message && message.xid)
-                this.credis!.xack(stream, name, message.xid)
-            })
-          promises.push(p)
-        } // !for message
-      } // !for stream
+            if(!event) {
+              await handleError({ message: 'event.required' })
+              await ack()
+              continue
+            }
+            if(!event.type) {
+              await handleError({ message: 'event.type.required', event })
+              await ack()
+              continue
+            }
+            if(!event.sid) {
+              await handleError({ message: 'event.sid.required'})
+              await ack()
+              continue
+            }
+            if(!event.id) {
+              await handleError({ message: 'event.id.required', event })
+              await ack()
+              continue;
+            }
+            if(!event.ts) {
+              await handleError({ message: 'event.ts.required', event })
+              await ack()
+              continue
+            }
 
-      Promise.all(promises)
+            const handler = this.handlers.get(event.type)
+            if(!handler) {
+              if(config.log)
+                config.log.trace({ msg: `no handler for event: ${event.type}` })
+              await ack()
+              continue
+            }
 
-      this.running = false
+            if(config.log) {
+              config.log.trace({ msg: 'exec handler', stream, instance, handler: handler.constructor.name, event })
+            }
+
+            await handler.handle(event)
+              .catch(async (err: Error) => {
+                await handleError({ message: err.message, stack: `${err.stack}`, event })
+              })
+              .finally(async () => {
+                await ack()
+              })
+          } // !for message
+        } // !for stream
+      }
+      finally {
+        this.running = false
+      }
     }, 500)
   }
 
@@ -301,8 +301,9 @@ export class EventBusRedis implements EventBus {
         message: error.message,
         stack: `${error.stack}`
       })
-      if(config.error)
+      if(config.error) {
         config.error(nerror)
+      }
       else
         throw nerror
     }
