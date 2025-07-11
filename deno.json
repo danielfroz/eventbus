@@ -1,0 +1,25 @@
+{
+  "name": "@danielfroz/eventbus",
+  "version": "0.1.0",
+  "description": "EventBus library for event-driven architecture services",
+  "license": "MIT",
+  "exports": {
+    ".": "./mod.ts",
+    "./jetstream": "./jetstream/mod.ts",
+    "./redis": "./redis/mod.ts"
+  },
+  "imports": {
+    "asserts": "https://deno.land/std@0.116.0/testing/asserts.ts"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "publish": {
+    "exclude": [
+      ".git",
+      ".github",
+      ".vscode",
+      "**/*_test.ts"
+    ]
+  }
+}
