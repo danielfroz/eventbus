@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import * as r from 'jsr:@db/redis@0.40.0'
-import { Errors } from '../mod.ts'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
+import { Errors } from '../mod.ts'
 import type * as i from './mod.ts'
 
 export interface EventBusRedisConfig {
@@ -49,16 +49,16 @@ export class EventBusRedis implements EventBus {
     if(config == null)
       throw new Errors.ArgumentError('config');
     if(!config.producer)
-      throw new Errors.ArgumentError('config.name')
+      throw new Errors.ArgumentError('config.producer')
     if(!config.error)
       throw new Errors.ArgumentError('config.error')
-
-    this.iconfig = config
+    if(!config.instance)
+      config.instance = `${config.producer}.${Math.floor(Date.now() / 1000)}`
 
     // register publisher so understand correct name
-    const name = config.producer;
-    const instance = config.instance ?? `${name}-${new Date().getTime() / 1000}`
-    config.instance = instance
+    this.iconfig = config
+
+    const { producer, instance } = config
 
     const connect = async (): Promise<r.Redis> => {
       try {
@@ -69,11 +69,12 @@ export class EventBusRedis implements EventBus {
           await descriptor.auth(this.config.password)
         return descriptor
       }
-      catch(error) {
+      catch(error: Error | any) {
         throw new Errors.NetworkError({
-          producer: name,
+          producer,
           instance,
           message: `EventBusRedis; configuration: ${JSON.stringify(this.config)}; connect failed: ${error}`,
+          stack: `${error.stack}`
         })
       }
     }
@@ -169,8 +170,8 @@ export class EventBusRedis implements EventBus {
             continue
           }
 
-          const event = config.decoder ? 
-            await config.decoder(content):
+          const event = config.decode ? 
+            await config.decode(content):
             JSON.parse(content) as Event
 
           if(!event) {
@@ -276,30 +277,34 @@ export class EventBusRedis implements EventBus {
     if(!this.predis)
       throw new Errors.InitError('init required')
 
-    if(!this.iconfig)
-      throw new Errors.InitError('not correctly initialized')
-    if(!this.iconfig.producer)
-      throw new Errors.InitError('config.producer required')
-    if(!this.iconfig.instance)
-      throw new Errors.InitError('config.instance required')
-
     const config = this.iconfig
-    const name = config.producer!
-    const instance = config.instance!
+    if(!config)
+      throw new Errors.InitError('config not correctly initialized')
+
+    const { producer, instance } = config
+    if(!producer)
+      throw new Errors.InitError('config.producer.required')
+    if(!instance)
+      throw new Errors.InitError('config.instance.required')
     
-    const content = config.encoder ?
-      await config.encoder(event):
+    const content = config.encode ?
+      await config.encode(event):
       JSON.stringify(event)
     
     try {
-      await this.predis.xadd(config.producer, '*', { content } as r.XAddFieldValues)
+      await this.predis.xadd(producer, '*', { content } as r.XAddFieldValues)
     }
     catch(error: Error|any) {
-      config.error(new Errors.NetworkError({ 
-        producer: name,
+      const nerror = new Errors.NetworkError({ 
+        producer,
+        instance,
         message: error.message,
-        instance
-      }))
+        stack: `${error.stack}`
+      })
+      if(config.error)
+        config.error(nerror)
+      else
+        throw nerror
     }
   }
 }

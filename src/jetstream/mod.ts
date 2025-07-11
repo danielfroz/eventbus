@@ -1,9 +1,9 @@
 // deno-lint-ignore-file no-explicit-any
-import * as NATS from 'jsr:@nats-io/nats-core@3.1.0'
+import * as NATSJ from 'jsr:@nats-io/jetstream@3.1.0';
+import * as NATS from 'jsr:@nats-io/nats-core@3.1.0';
 import * as NATSC from 'jsr:@nats-io/transport-deno@3.1.0';
-import * as NATSJ from 'jsr:@nats-io/jetstream@3.1.0'
-import { Errors } from '../mod.ts'
-import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
+import type { Config, Event, EventBus, EventHandler } from '../mod.ts';
+import { Errors } from '../mod.ts';
 
 export interface EventBusJetstreamConfig {
   servers: string[]
@@ -40,7 +40,7 @@ export class EventBusJetstream implements EventBus {
     try {
       const name = config.producer
       this.ncs = await this.connect()
-      this.jss = await NATSJ.jetstream(this.ncs)
+      this.jss = NATSJ.jetstream(this.ncs)
       this.subj = name
       const jsm = await NATSJ.jetstreamManager(this.ncs)
       const streams = await jsm.streams.list().next()
@@ -57,11 +57,11 @@ export class EventBusJetstream implements EventBus {
       }
     }
     catch(err: Error|any) {
-      console.log(`eventbus-jetstream: err caught: `, err.stack)
       throw new Errors.NetworkError({
         producer: config.producer,
-        instance: `${config.producer}.${Math.round(new Date().getTime() / 1000)}`,
-        message: `error while creating service: ${err.message}`
+        instance: config.instance!,
+        message: `error while creating service: ${err.message}`,
+        stack: `${err.stack}`
       })
     }
   }
@@ -140,8 +140,8 @@ export class EventBusJetstream implements EventBus {
             for await (const msg of msgs) {
 
               const json = new TextDecoder().decode(msg.data)
-              const event = config.decoder ? 
-                await config.decoder(json):
+              const event = config.decode ? 
+                await config.decode(json):
                 JSON.parse(json) as Event
 
               if(event == null) {
@@ -200,6 +200,11 @@ export class EventBusJetstream implements EventBus {
   async init(config: Config): Promise<void> {
     if(!config)
       throw new Errors.ArgumentError('config')
+    if(!config.producer)
+      throw new Errors.ArgumentError('config.producer')
+    if(!config.instance)
+      config.instance = `${config.producer}.${Math.floor(Date.now() / 1000)}`
+
     this.iconfig = config
     try {
       await this._initPublisher(config)
@@ -255,11 +260,32 @@ export class EventBusJetstream implements EventBus {
     }
 
     const config = this.iconfig
+    const { producer, instance } = config
+    if(!producer) {
+      throw new Errors.InitError('config.producer.required')
+    }
+    if(!instance) {
+      throw new Errors.InitError('config.producer.instance')
+    }
 
-    const payload = config.encoder ?
-      await config.encoder(event):
+    const payload = config.encode ?
+      await config.encode(event):
       JSON.stringify(event)
+    try {
+      await this.jss.publish(this.subj, payload)
+    }
+    catch(error: Error|any) {
+      const nerror = new Errors.NetworkError({
+        producer,
+        instance,
+        message: error.message,
+        stack: `${error.stack}`
+      })
 
-    await this.jss.publish(this.subj, payload)
+      if(config.error)
+        config.error(nerror)
+      else
+        throw nerror
+    }
   }
 }

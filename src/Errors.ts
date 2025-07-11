@@ -28,6 +28,7 @@ export type NetworkErrorArgs = {
   producer: string
   instance: string
   message: string
+  stack?: string
 }
 export class NetworkError extends EventBusError {
   producer: string
@@ -38,6 +39,7 @@ export class NetworkError extends EventBusError {
     this.producer = 'NetworkError'
     this.producer = args.producer
     this.instance = args.instance
+    this.stack = args.stack
   }
 }
 

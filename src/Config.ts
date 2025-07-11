@@ -1,4 +1,4 @@
-import type { Event, Errors, EventHandler } from './mod.ts'
+import type { Errors, Event, EventHandler } from './mod.ts'
 
 export interface Config {
   /**
@@ -18,14 +18,15 @@ export interface Config {
   consuming?: Array<string>
   handlers?: Array<EventHandler<Event>>
   /**
-   * When specified, we utilize decoder to transform the message from EventBus (string) to Event.
-   * This gives the ability to add custom logic, such as 'checking for extra fields'
+   * When specified, we utilize decode() to transform EventBus message / payload (string) to Event.
+   * This gives the ability to add custom logic, such as 
+   * 'checking for extra fields' or 'add metadata to event'
    */
-  decoder?: (content: string) => Promise<Event>
+  decode?: (content: string) => Promise<Event>
   /**
-   * When specified we utilize decoder to transform Event to message prior posting it to EventBus
+   * When specified does the opposite of decode(). Transforms Event to EventBus message / payload.
    */
-  encoder?: (event: Event) => Promise<string>
+  encode?: (event: Event) => Promise<string>
   /**
    * handler for EventBus errors
    */
