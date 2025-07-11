@@ -4,9 +4,9 @@
   "description": "EventBus library for event-driven architecture services",
   "license": "MIT",
   "exports": {
-    ".": "./mod.ts",
-    "./jetstream": "./jetstream/mod.ts",
-    "./redis": "./redis/mod.ts"
+    ".": "./src/mod.ts",
+    "./jetstream": "./src/jetstream/mod.ts",
+    "./redis": "./src/redis/mod.ts"
   },
   "imports": {
     "asserts": "https://deno.land/std@0.116.0/testing/asserts.ts"
