@@ -25,7 +25,7 @@ class UserCreatedHandler implements eb.EventHandler<User.Created> {
   // deno-lint-ignore require-await
   async handle(event: User.Created): Promise<void> {
     if(event == null)
-      throw new eb.Errors.ArgumentError('event')
+      throw new eb.ArgumentError('event')
     const db = new Map<string, User>()
     db.set(event.user.id, event.user)
   }

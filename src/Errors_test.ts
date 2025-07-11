@@ -1,10 +1,10 @@
 // deno-lint-ignore-file no-explicit-any
 import { assert } from 'asserts'
-import { Errors } from './mod.ts'
+import { ArgumentError, InitError } from './mod.ts'
 
 Deno.test('ArgumentError check', () => {
   try {
-    throw new Errors.ArgumentError('This is an failed argument')
+    throw new ArgumentError('This is an failed argument')
   }
   catch(error: Error|any) {
     assert(error.message === 'This is an failed argument')
@@ -14,7 +14,7 @@ Deno.test('ArgumentError check', () => {
 
 Deno.test('InitError name check', () => {
   try {
-    throw new Errors.InitError('This is an error')
+    throw new InitError('This is an error')
   }
   catch(error: Error|any) {
     assert(error.toString().includes('InitError'))

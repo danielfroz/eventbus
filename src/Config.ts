@@ -1,4 +1,4 @@
-import type { Errors, Event, EventHandler } from './mod.ts'
+import type { Event, EventBusError, EventHandler, EventHandlerError } from './mod.ts'
 
 export interface Config {
   /**
@@ -30,9 +30,9 @@ export interface Config {
   /**
    * handler for EventBus errors
    */
-  error: (error: Errors.EventBusError) => Promise<void>
+  error: (error: EventBusError) => Promise<void>
   /**
    * handler thrown by EventHandlers
    */
-  errorHandler?: (error: Errors.EventHandlerError) => Promise<void>
+  errorHandler?: (error: EventHandlerError) => Promise<void>
 }

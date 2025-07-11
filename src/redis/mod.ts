@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import * as r from 'jsr:@db/redis@0.40.0'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
-import { Errors } from '../mod.ts'
+import { ArgumentError, EventHandlerError, HandlerError, InitError, NetworkError } from "../mod.ts"
 import type * as i from './mod.ts'
 
 export interface EventBusRedisConfig {
@@ -35,9 +35,9 @@ export class EventBusRedis implements EventBus {
 
   constructor(config: i.EventBusRedisConfig) {
     if(!config)
-      throw new Errors.ArgumentError('config')
+      throw new ArgumentError('config')
     if(!config.hostname)
-      throw new Errors.ArgumentError('config.hostname')
+      throw new ArgumentError('config.hostname')
 
     this.config = config
     if(!this.config.port)
@@ -47,11 +47,11 @@ export class EventBusRedis implements EventBus {
 
   async init(config: Config): Promise<void> {
     if(config == null)
-      throw new Errors.ArgumentError('config');
+      throw new ArgumentError('config');
     if(!config.producer)
-      throw new Errors.ArgumentError('config.producer')
+      throw new ArgumentError('config.producer')
     if(!config.error)
-      throw new Errors.ArgumentError('config.error')
+      throw new ArgumentError('config.error')
     if(!config.instance)
       config.instance = `${config.producer}.${Math.floor(Date.now() / 1000)}`
 
@@ -70,7 +70,7 @@ export class EventBusRedis implements EventBus {
         return descriptor
       }
       catch(error: Error | any) {
-        throw new Errors.NetworkError({
+        throw new NetworkError({
           producer,
           instance,
           message: `EventBusRedis; configuration: ${JSON.stringify(this.config)}; connect failed: ${error}`,
@@ -92,7 +92,7 @@ export class EventBusRedis implements EventBus {
     // if no handler... thrown an Error
     this.credis = await connect()
     if(!config.handlers) {
-      throw new Errors.ArgumentError('config.handlers')
+      throw new ArgumentError('config.handlers')
     }
 
     if(config.handlers) {
@@ -116,7 +116,7 @@ export class EventBusRedis implements EventBus {
         }
         catch(error: Error|any) {
           if(!error.message.includes('already exists')) {
-            throw new Errors.NetworkError({ producer: name, instance, message: error.message })
+            throw new NetworkError({ producer: name, instance, message: error.message })
           }
         }
         streams.push({ key: stream, xid: '>' })
@@ -125,7 +125,7 @@ export class EventBusRedis implements EventBus {
   
     const throwError = (stream: string, group: string, message: string): Promise<void> => {
       if(config.error)
-        config.error(new Errors.HandlerError({
+        config.error(new HandlerError({
           message,
           stream,
           group,
@@ -217,7 +217,7 @@ export class EventBusRedis implements EventBus {
             .catch((err: Error) => {
               // console.error('EventBusRedis: handler catch: %o', e)
               if(this.iconfig && this.iconfig.errorHandler) {
-                this.iconfig.errorHandler(new Errors.EventHandlerError({
+                this.iconfig.errorHandler(new EventHandlerError({
                   error: err,
                   event,
                   producer: handler.constructor.name,
@@ -262,30 +262,30 @@ export class EventBusRedis implements EventBus {
   async publish(event: Event): Promise<void> {
     // checking events...
     if(!event)
-      throw new Errors.ArgumentError('event')
+      throw new ArgumentError('event')
     if(!event.type || typeof(event.type) !== 'string')
-      throw new Errors.ArgumentError('event.type')
+      throw new ArgumentError('event.type')
     if(!event.id)
-      throw new Errors.ArgumentError('event.id')
+      throw new ArgumentError('event.id')
     if(!event.sid)
-      throw new Errors.ArgumentError('event.sid')
+      throw new ArgumentError('event.sid')
     if(!event.author)
-      throw new Errors.ArgumentError('event.author')
+      throw new ArgumentError('event.author')
     if(!event.ts)
       event.ts = new Date().toISOString()
 
     if(!this.predis)
-      throw new Errors.InitError('init required')
+      throw new InitError('init required')
 
     const config = this.iconfig
     if(!config)
-      throw new Errors.InitError('config not correctly initialized')
+      throw new InitError('config not correctly initialized')
 
     const { producer, instance } = config
     if(!producer)
-      throw new Errors.InitError('config.producer.required')
+      throw new InitError('config.producer.required')
     if(!instance)
-      throw new Errors.InitError('config.instance.required')
+      throw new InitError('config.instance.required')
     
     const content = config.encode ?
       await config.encode(event):
@@ -295,7 +295,7 @@ export class EventBusRedis implements EventBus {
       await this.predis.xadd(producer, '*', { content } as r.XAddFieldValues)
     }
     catch(error: Error|any) {
-      const nerror = new Errors.NetworkError({ 
+      const nerror = new NetworkError({ 
         producer,
         instance,
         message: error.message,

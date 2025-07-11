@@ -2,8 +2,8 @@
 import * as NATSJ from 'jsr:@nats-io/jetstream@3.1.0';
 import * as NATS from 'jsr:@nats-io/nats-core@3.1.0';
 import * as NATSC from 'jsr:@nats-io/transport-deno@3.1.0';
-import type { Config, Event, EventBus, EventHandler } from '../mod.ts';
-import { Errors } from '../mod.ts';
+import type { Config, Event, EventBus, EventHandler, HandlerErrorArgs } from '../mod.ts';
+import { ArgumentError, EventHandlerError, HandlerError, InitError, NetworkError } from "../mod.ts";
 
 export interface EventBusJetstreamConfig {
   servers: string[]
@@ -32,7 +32,7 @@ export class EventBusJetstream implements EventBus {
       })
     }
     catch(err: Error|any) {
-      throw new Errors.InitError(`connect failed: ${JSON.stringify(this.jscfg.servers)}; err: ${err.message}`)
+      throw new InitError(`connect failed: ${JSON.stringify(this.jscfg.servers)}; err: ${err.message}`)
     }
   }
 
@@ -57,7 +57,7 @@ export class EventBusJetstream implements EventBus {
       }
     }
     catch(err: Error|any) {
-      throw new Errors.NetworkError({
+      throw new NetworkError({
         producer: config.producer,
         instance: config.instance!,
         message: `error while creating service: ${err.message}`,
@@ -73,7 +73,7 @@ export class EventBusJetstream implements EventBus {
     }
     
     if(!config.handlers) {
-      throw new Errors.InitError(`consuming defined but no handler was set`)
+      throw new InitError(`consuming defined but no handler was set`)
     }
     
     try {
@@ -121,10 +121,10 @@ export class EventBusJetstream implements EventBus {
         consumers.push({ stream, consumer })
       }
 
-      const handlerError = (args: Errors.HandlerErrorArgs): Promise<void> => {
+      const handlerError = (args: HandlerErrorArgs): Promise<void> => {
         return new Promise((resolve, _r) => {
           if(config.error)
-            config.error(new Errors.HandlerError(args))
+            config.error(new HandlerError(args))
           return resolve()
         })
       }
@@ -172,7 +172,7 @@ export class EventBusJetstream implements EventBus {
                 .then(() => msg.ack())
                 .catch((err: Error) => {
                   if(config.errorHandler) {
-                    config.errorHandler(new Errors.EventHandlerError({
+                    config.errorHandler(new EventHandlerError({
                       error: err,
                       event,
                       producer: handler.constructor.name,
@@ -199,9 +199,9 @@ export class EventBusJetstream implements EventBus {
   
   async init(config: Config): Promise<void> {
     if(!config)
-      throw new Errors.ArgumentError('config')
+      throw new ArgumentError('config')
     if(!config.producer)
-      throw new Errors.ArgumentError('config.producer')
+      throw new ArgumentError('config.producer')
     if(!config.instance)
       config.instance = `${config.producer}.${Math.floor(Date.now() / 1000)}`
 
@@ -237,35 +237,35 @@ export class EventBusJetstream implements EventBus {
 
   async publish(event: Event): Promise<void> {
     if(!event)
-      throw new Errors.ArgumentError('event')
+      throw new ArgumentError('event')
     if(!event.type || typeof(event.type) !== 'string')
-      throw new Errors.ArgumentError('event.type')
+      throw new ArgumentError('event.type')
     if(!event.id)
-      throw new Errors.ArgumentError('event.id')
+      throw new ArgumentError('event.id')
     if(!event.sid)
-      throw new Errors.ArgumentError('event.sid')
+      throw new ArgumentError('event.sid')
     if(!event.author)
-      throw new Errors.ArgumentError('event.author')
+      throw new ArgumentError('event.author')
     if(!event.ts)
       event.ts = new Date().toISOString()
 
     if(!this.iconfig) {
-      throw new Errors.InitError('eventbus not initialized')
+      throw new InitError('eventbus not initialized')
     }
     if(!this.jss) {
-      throw new Errors.InitError('not connected or initialized')
+      throw new InitError('not connected or initialized')
     }
     if(!this.subj) {
-      throw new Errors.InitError('not initialized; this.subj')
+      throw new InitError('not initialized; this.subj')
     }
 
     const config = this.iconfig
     const { producer, instance } = config
     if(!producer) {
-      throw new Errors.InitError('config.producer.required')
+      throw new InitError('config.producer.required')
     }
     if(!instance) {
-      throw new Errors.InitError('config.producer.instance')
+      throw new InitError('config.producer.instance')
     }
 
     const payload = config.encode ?
@@ -275,7 +275,7 @@ export class EventBusJetstream implements EventBus {
       await this.jss.publish(this.subj, payload)
     }
     catch(error: Error|any) {
-      const nerror = new Errors.NetworkError({
+      const nerror = new NetworkError({
         producer,
         instance,
         message: error.message,
