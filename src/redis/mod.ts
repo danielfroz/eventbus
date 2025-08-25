@@ -99,16 +99,10 @@ export class EventBusRedis implements EventBus {
       throw new InitError('config.handlers.required')
     }
 
-    if(config.handlers) {
-      for(const handler of config.handlers) {
-        const types = new Array<string>()
-        if(handler.type) {
-          types.push(handler.type)
-        }
-        for(const t of types) {
-          this.handlers.set(t, handler)
-        }
-      }
+    // initializer handlers
+    for(const hop of config.handlers) {
+      const handler = typeof(hop) === 'function' ? hop(): hop
+      this.handlers.set(handler.type, handler)
     }
   
     this.credis = await connect()

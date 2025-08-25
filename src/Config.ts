@@ -1,6 +1,8 @@
 import type { Log } from '@danielfroz/slog'
 import type { Event, EventBusError, EventHandler, EventHandlerError } from './mod.ts'
 
+type TypeOrPredicate<T> = T | (() => T)
+
 export interface Config {
   /**
    * Name of the service / module (aka: consumer group name)
@@ -17,7 +19,7 @@ export interface Config {
    * Consumer group names which this EventBus is listening for events
    */
   consuming?: Array<string>
-  handlers?: Array<EventHandler<Event>>
+  handlers?: Array<TypeOrPredicate<EventHandler<Event>>>
   /**
    * When specified, we utilize decode() to transform EventBus message / payload (string) to Event.
    * This gives the ability to add custom logic, such as 

@@ -80,13 +80,16 @@ export class EventBusJetstream implements EventBus {
     if(!config.handlers) {
       throw new InitError(`config.handlers.required`)
     }
+
+    // initialize handlers
+    for(const hop of config.handlers) {
+      const handler = typeof(hop) === 'function' ? hop(): hop
+      this.handlers.set(handler.type, handler)
+    }
     
     try {
       const producer = config.producer
-      // initialize headers
-      for(const h of config.handlers) {
-        this.handlers.set(h.type, h)
-      }
+      
 
       this.ncc = await this.connect()
       this.jsc = NATSJ.jetstream(this.ncc)

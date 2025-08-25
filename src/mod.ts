@@ -5,3 +5,4 @@ export * from './EventBus.ts'
 export * from './EventHandler.ts'
 
 export type { Config, Event }
+
