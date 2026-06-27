@@ -415,9 +415,3 @@ Issues and pull requests are welcome.
 
 Please keep each backend self-contained (its broker client belongs in that
 adapter's `deps.ts`) and add a test to `src/mod_test.ts` for new behavior.
-
----
-
-## License
-
-[MIT](./LICENSE) © contributors.
