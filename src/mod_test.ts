@@ -104,7 +104,9 @@ Deno.test({
       await bus.init({
         producer,
         consuming: [producer],
-        handlers: [handler],
+        // async (Promise-returning) lazy factory — exercises the `await hop()`
+        // resolution path (e.g. dynamic import / async DI) end-to-end
+        handlers: [() => Promise.resolve(handler)],
         error: () => Promise.resolve(),
         errorHandler: () => Promise.resolve(),
       })

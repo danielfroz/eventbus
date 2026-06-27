@@ -235,6 +235,77 @@ after the subscribing service and `ack()` after handling.
 
 ---
 
+## Handler registration
+
+`Config.handlers` accepts three forms, mixable in one array:
+
+```ts
+handlers: [
+  new OrderCreatedHandler(),                       // an instance
+  () => new BillCreatedHandler(),                  // a sync factory (lazy)
+  () => import('./handlers/Refund.ts')             // an async factory (lazy)
+        .then((m) => new m.RefundHandler()),
+]
+```
+
+### Lazy / async factories
+
+A factory may return a `Promise`, which the bus `await`s during `init()`. This
+lets you **defer loading a handler's module** with a dynamic `import()` (code
+splitting) or resolve it through an async path — handy with a DI container:
+
+```ts
+import { container } from '@danielfroz/sloth'
+
+handlers: [
+  () => import('./handlers/OrderCreated.ts')
+        .then((m) => container.resolve(m.OrderCreated)),
+]
+```
+
+Factories resolve at `init()` (the handler map is built before consuming starts);
+instances and sync factories keep working unchanged.
+
+### The `@Consumes()` decorator
+
+Instead of listing handlers by hand, mark each with `@Consumes(type)` and let the
+bus discover them. The decorator supplies the event type (so the class needs no
+`type` field) and registers the class for `consumers()`:
+
+```ts
+import { EventHandler, Consumes, consumers } from '@danielfroz/eventbus'
+import { container, DI } from '@danielfroz/sloth'
+
+@Consumes(Events.Order.CREATED)
+export class OrderCreated implements EventHandler<Events.Order.Created> {
+  constructor(private readonly repo = DI.inject(Types.Repos.Order)) {}
+  async handle(e: Events.Order.Created) { /* ... */ }
+}
+
+// wiring — discovery + lazy resolution via your container
+await bus.init({
+  producer: 'order',
+  consuming: ['order'],
+  handlers: consumers().map((C) => () => container.resolve(C)),
+  error: async (e) => console.error(e),
+  errorHandler: async (e) => console.error(e),
+})
+```
+
+`@Consumes(type)` requires a non-empty `type`. It's a standard TC39 decorator
+(no `experimentalDecorators`, no `reflect-metadata`), and the library stays
+**dependency-free of any DI container** — you map the discovered constructors to
+factories with your own container. `init()` rejects any handler that ends up with
+no `type` (neither a `@Consumes` type nor a `type` field).
+
+## Integration with sloth & slog
+
+EventBus pairs naturally with [`@danielfroz/sloth`](https://jsr.io/@danielfroz/sloth)
+(DI container, lazy `DI.inject`) and [`@danielfroz/slog`](https://jsr.io/@danielfroz/slog)
+(structured logging via `log` in `Config`). A complete, runnable example —
+`@Consumes` discovery, lazy factories, `DI.inject` dependencies, and a wired
+`bus.init({ ..., log })` — lives in [`examples/sloth-slog.ts`](./examples/sloth-slog.ts).
+
 ## Custom serialization
 
 By default events are (de)serialized as JSON. Provide `encode`/`decode` to add

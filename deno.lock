@@ -1,7 +1,9 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@danielfroz/slog@0.3.2": "0.3.2",
     "jsr:@danielfroz/slog@~0.2.3": "0.2.3",
+    "jsr:@danielfroz/sloth@0.3.1": "0.3.1",
     "jsr:@db/redis@0.40.0": "0.40.0",
     "jsr:@nats-io/jetstream@3.1.0": "3.1.0",
     "jsr:@nats-io/nats-core@3.1.0": "3.1.0",
@@ -20,6 +22,15 @@
   "jsr": {
     "@danielfroz/slog@0.2.3": {
       "integrity": "5d4cc9c3819720a4dac6b8e14b058e672eb7010561ac7c1cebb3dacdaa0bba96"
+    },
+    "@danielfroz/slog@0.3.2": {
+      "integrity": "761c37d5d121596b5deb66f3a05fa4b1034e7b65853cc04d7cb1f8e4f8faf7c0"
+    },
+    "@danielfroz/sloth@0.3.1": {
+      "integrity": "932a7e5f56cbdac9dd2a64d9d115463c5de91546a3a6fa17e181de17705edfd8",
+      "dependencies": [
+        "jsr:@danielfroz/slog@0.3.2"
+      ]
     },
     "@db/redis@0.40.0": {
       "integrity": "98bef146ad2d1262c0a5388c32e9d62e83ada410c9cc49cee3868085037e930b",

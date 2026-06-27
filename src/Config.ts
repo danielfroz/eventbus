@@ -1,7 +1,7 @@
 import type { Log } from '@danielfroz/slog'
 import type { Event, EventBusError, EventHandler, EventHandlerError } from './mod.ts'
 
-type TypeOrPredicate<T> = T | (() => T)
+type TypeOrPredicate<T> = T | (() => T | Promise<T>)
 
 export interface Config {
   /**

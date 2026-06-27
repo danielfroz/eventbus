@@ -147,7 +147,9 @@ export class EventBusIggy implements EventBus {
 
     // initialize handlers
     for(const hop of config.handlers) {
-      const handler = typeof(hop) === 'function' ? hop() : hop
+      const handler = typeof(hop) === 'function' ? await hop() : hop
+      if(!handler.type)
+        throw new InitError('handler.type required (declare a `type` field or use @Consumes(type))')
       this.handlers.set(handler.type, handler)
     }
 

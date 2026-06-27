@@ -1,6 +1,6 @@
 {
   "name": "@danielfroz/eventbus",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "EventBus library for event-driven architecture services",
   "license": "MIT",
   "exports": {
@@ -21,6 +21,7 @@
       ".git",
       ".github",
       ".vscode",
+      "examples",
       "**/*_test.ts"
     ]
   }

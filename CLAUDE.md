@@ -27,14 +27,28 @@ broker, each exported as a subpath:
   `init(config)`, `publish(event)`, `destroy()`.
 - **`Event`** (`Event.ts`) — minimal envelope: `type`, `id`, `sid`, `author?`,
   `ts?`. Domain payload fields are added by extending `Event`.
-- **`EventHandler<T>`** (`EventHandler.ts`) — `{ type, handle(event) }`.
+- **`EventHandler<T>`** (`EventHandler.ts`) — `{ type?, handle(event) }`. `type`
+  is **optional** so a `@Consumes(type)`-decorated class (which stamps `type` on
+  the prototype) satisfies the interface without a field; the adapter loop
+  rejects a handler that ends up with no `type`.
+- **`@Consumes(type)` + `consumers()`** (`Consumes.ts`) — a TC39 class decorator
+  (no `experimentalDecorators`, no `reflect-metadata`) that records the handler
+  class in a module-level registry **and** stamps the event `type` onto the class
+  prototype. `consumers()` reads the registry back as constructors; `type` is
+  **required** and validated non-empty. The core stays DI-free — the app maps
+  discovered constructors to factories with its own container:
+  `handlers: consumers().map((C) => () => container.resolve(C))`. Mirrors sloth's
+  `@Route`/`@Provide`.
 - **`Config`** (`Config.ts`) — runtime config passed to `init()`. Key fields:
   - `producer` — this service's name; **also the consumer-group name** and the
     name of the stream/topic this service publishes to.
   - `instance` — unique per-process id (defaults to `producer.<epoch>`).
   - `consuming` — list of **other producers'** streams to subscribe to. Omit it
     for a publisher-only bus.
-  - `handlers` — `EventHandler` instances or zero-arg factories (predicates).
+  - `handlers` — `EventHandler` instances, **or** zero-arg factories returning an
+    instance **or a `Promise`** (`TypeOrPredicate<T> = T | (() => T | Promise<T>)`).
+    The adapter loop resolves each with `await hop()` at `init()`, so async/lazy
+    factories work — e.g. `() => import('./H.ts').then((m) => container.resolve(m.H))`.
   - `encode`/`decode` — optional custom (de)serialization; default is JSON.
   - `error` — required; receives transport/`NetworkError`s.
   - `errorHandler` — required **when consuming**; receives `EventHandlerError`s
@@ -50,9 +64,12 @@ others:
 1. `init()` validates `Config`, connects, and ensures the **producer** topology
    exists (so `publish` works even with no consumers).
 2. If `config.consuming` is set, it requires `errorHandler` + `handlers`,
-   registers handlers into a `Map<type, handler>`, ensures each consuming
-   source, then starts a `setInterval` poll loop guarded by a `running` flag
-   (prevents overlapping cycles).
+   resolves each handler entry with `await hop()` (supports async/lazy factories),
+   rejects any with no `type` (`InitError`), registers them into a
+   `Map<type, handler>`, ensures each consuming source, then starts a
+   `setInterval` poll loop guarded by a `running` flag (prevents overlapping
+   cycles). The resolve loop is **identical across all three adapters** — keep it
+   in sync when editing.
 3. Per polled message: decode → validate (`type`/`sid`/`id`/`ts`) → dispatch to
    the handler by `type` → **acknowledge** (Redis `xack` / Jetstream `msg.ack`
    / Iggy `offset.store`). Validation failures and handler throws are routed to
@@ -148,14 +165,18 @@ import `asserts` (see `deno.json` import map).
 
 ### Tests
 
-- **Unit:** `Errors_test.ts`, `EventHandler_test.ts` — no broker needed.
+- **Unit:** `Errors_test.ts`, `EventHandler_test.ts`, `Consumes_test.ts`
+  (decorator discovery + prototype stamping) — no broker needed.
 - **Integration:** `src/mod_test.ts` runs the same publish→consume round-trip
-  against all three backends. It needs the brokers from the local
-  `docker-compose.yml` (redis 6379 / nats 4222 / iggy 8090, no UI, ephemeral —
-  iggy root password is `iggy/iggy` there). Each test **probes its port and is
-  skipped when the broker is down**, so `sh ./test.sh` stays green without
-  docker. Each run uses a unique alphanumeric producer name to avoid
+  against all three backends (the redis case passes its handler as an **async
+  factory** to exercise the `await hop()` path). It needs the brokers from the
+  local `docker-compose.yml` (redis 6379 / nats 4222 / iggy 8090, no UI,
+  ephemeral — iggy root password is `iggy/iggy` there). Each test **probes its
+  port and is skipped when the broker is down**, so `sh ./test.sh` stays green
+  without docker. Each run uses a unique alphanumeric producer name to avoid
   stream/consumer-group state collisions.
+- **Examples:** `examples/sloth-slog.ts` (excluded from `test.sh`/publish) — a
+  runnable sloth+slog integration; type-check with `deno check examples/*.ts`.
 
 > **Dependency note:** each adapter's third-party imports live in a per-adapter
 > `deps.ts` (`src/iggy/deps.ts`, `src/jetstream/deps.ts`, `src/redis/deps.ts`)
