@@ -166,6 +166,7 @@ import { EventBusIggy } from '@danielfroz/eventbus/iggy'
 const bus = new EventBusIggy({
   uri: 'tcp://iggy:iggy@127.0.0.1:8090',  // tls:// selects TLS; defaults: 8090, iggy/iggy
   // partitions: 1,      // partitions for this producer's topic
+  // expiry: 86400,      // topic message expiry in seconds (default 1 day; 0 = never)
   // batch: 100,         // messages fetched per poll
   // interval: 500,      // poll interval (ms)
 })
@@ -337,7 +338,7 @@ await bus.init({
 |---------|---------------------|
 | `EventBusRedis` | `{ uri, trace? }` — `uri`: `redis://[user:pass@]host[:port]` (port → 6379) |
 | `EventBusJetstream` | `{ uri }` — `uri`: `nats://host[:port]` or `host[:port]` (port → 4222) |
-| `EventBusIggy` | `{ uri, partitions?=1, batch?=100, interval?=500, trace? }` — `uri`: `tcp://[user:pass@]host[:port]` (`tls://` for TLS; port → 8090, creds → iggy/iggy) |
+| `EventBusIggy` | `{ uri, partitions?=1, expiry?=86400, batch?=100, interval?=500, trace? }` — `uri`: `tcp://[user:pass@]host[:port]` (`tls://` for TLS; port → 8090, creds → iggy/iggy). `expiry`: topic message expiry in **seconds** (0 = never) |
 
 All connection details (host, port, credentials, and — for Iggy — the transport
 via `tcp://`/`tls://`) come from the `uri`. The scheme is ignored by Redis and

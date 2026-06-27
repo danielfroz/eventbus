@@ -30,6 +30,12 @@ export interface EventBusIggyConfig {
    */
   partitions?: number
   /**
+   * Message expiry for created topics, in **seconds**. The server deletes
+   * messages older than this. Defaults to 86400 (1 day), mirroring the
+   * Jetstream adapter's 1-day `max_age`. Set `0` to keep messages forever.
+   */
+  expiry?: number
+  /**
    * Maximum amount of messages fetched per poll cycle. Defaults to 100.
    */
   batch?: number
@@ -61,6 +67,11 @@ export class EventBusIggy implements EventBus {
   private username: string
   private password: string
   /**
+   * Topic message expiry in microseconds (0 = unlimited), derived from
+   * config.expiry (seconds) — the unit the Iggy createTopic command expects.
+   */
+  private expiryMicros: bigint
+  /**
    * Single pooled Iggy client used for both publishing and polling.
    */
   private client?: Client
@@ -80,9 +91,12 @@ export class EventBusIggy implements EventBus {
 
     this.config = config
     this.config.partitions = this.config.partitions ?? 1
+    this.config.expiry = this.config.expiry ?? 86400
     this.config.batch = this.config.batch ?? 100
     this.config.interval = this.config.interval ?? 500
     this.config.trace = this.config.trace ?? false
+    // seconds -> microseconds (Iggy createTopic.messageExpiry unit); 0 = unlimited
+    this.expiryMicros = BigInt(this.config.expiry) * 1_000_000n
 
     const u = parseUri(config.uri)
     this.host = u.hostname
@@ -331,6 +345,7 @@ export class EventBusIggy implements EventBus {
         name: TOPIC,
         partitionCount: this.config.partitions!,
         compressionAlgorithm: COMPRESSION_NONE,
+        messageExpiry: this.expiryMicros,
       })
     }
     catch(error: Error | any) {

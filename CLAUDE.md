@@ -133,7 +133,16 @@ the implementation — **do not "simplify" them away**:
 
 `uri` (required) — `tcp://[user:pass@]host[:port]`; `tls://` selects TLS,
 otherwise TCP. Defaults derived from the uri: port `8090`, creds `iggy`/`iggy`.
-Plus `partitions` (1), `batch` (100 msgs/poll), `interval` (500ms), `trace`.
+Plus `partitions` (1), `expiry` (topic message expiry in **seconds**, default
+86400 = 1 day, `0` = never; mirrors Jetstream's 1-day `max_age`), `batch`
+(100 msgs/poll), `interval` (500ms), `trace`. `expiry` is converted to
+microseconds (`* 1_000_000n`) for the Iggy `createTopic.messageExpiry` field and
+applied to every topic `_ensureTopic` creates.
+
+> The apache-iggy `topic.get` **misdeserializes `messageExpiry`** in 0.8.0
+> (returns garbage like 2^57-1), so don't trust it to verify expiry — confirm via
+> the HTTP API (`GET /streams/{s}/topics/{t}` → `message_expiry` in microseconds).
+> The write path is correct (verified: `expiry: 60` ⇒ `message_expiry: 60000000`).
 
 All three adapters share this **uri-based** config (`src/uri.ts` → `parseUri`):
 `EventBusRedis { uri, trace? }` (`redis://…`, port 6379), `EventBusJetstream
