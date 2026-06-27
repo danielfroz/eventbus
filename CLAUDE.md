@@ -193,6 +193,95 @@ import `asserts` (see `deno.json` import map).
 
 ---
 
+## Migrating 0.1.5 / 0.1.6 → 0.2.0
+
+**0.2.0 is backward compatible** — bumping the dependency alone needs no code
+changes. The only interface change is additive: `EventHandler.type` is now
+optional (`type?: string`). Existing handlers (with a `type` field) and existing
+`handlers: [instance]` / `handlers: [() => instance]` wiring keep working. The
+items below are **opt-in**.
+
+### New: async / lazy handler factories
+
+`Config.handlers` now also accepts `() => Promise<EventHandler>`, awaited at
+`init()`. Use it to lazily import a handler module (code splitting) or resolve it
+asynchronously:
+
+```ts
+handlers: [
+  () => import('@/handlers/events/order/Created.ts')
+        .then((m) => container.resolve(m.Created)),
+]
+```
+
+### New: `@Consumes()` auto-discovery (with `@danielfroz/sloth`)
+
+Replace hand-maintained handler lists with decorator discovery. (Paths like
+`@/handlers/...` below are **consumer-service** examples, e.g. the `order` /
+`organization` services.)
+
+**Before (0.1.x) — manual list, `type` field on each handler:**
+```ts
+import * as h from '@/handlers/events/index.ts'
+// handler:
+export class Created implements EventHandler<Events.Organization.Created> {
+  type = Events.Organization.CREATED
+  constructor(private readonly ro = DI.inject(Types.Repos.Organization)) {}
+  async handle(event: Events.Organization.Created) { /* ... */ }
+}
+// wiring:
+const handlers = [
+  container.resolve(h.Organization.Created),
+  container.resolve(h.Bill.Created),
+]
+await bus.init({ producer: 'organization', consuming: [/* ... */], handlers, /* ... */ })
+```
+
+**After (0.2.0) — `@Consumes`, no `type` field, `consumers()` discovery:**
+```ts
+import '@/handlers/events/index.ts'                 // side-effect import (see below)
+import { Consumes, consumers } from '@danielfroz/eventbus'
+// handler:
+@Consumes(Events.Organization.CREATED)
+export class Created implements EventHandler<Events.Organization.Created> {
+  constructor(private readonly ro = DI.inject(Types.Repos.Organization)) {}
+  async handle(event: Events.Organization.Created) { /* ... */ }
+}
+// wiring:
+await bus.init({
+  producer: 'organization',
+  consuming: [/* ... */],
+  handlers: consumers().map((C) => () => container.resolve(C)),
+  /* ... */
+})
+```
+
+**Critical — side-effect import:** `consumers()` only returns classes whose
+**modules have been evaluated** (the `@Consumes` decorator runs at import time).
+The manual approach imported handlers implicitly via `h.Organization.Created`;
+with discovery you no longer reference `h.*`, so keep a **side-effect import** of
+the handlers barrel (`import '@/handlers/events/index.ts'`) before `init()`.
+Forgetting it ⇒ empty `consumers()` ⇒ no handlers registered.
+
+### Steps
+
+1. Bump `@danielfroz/eventbus` to `0.2.0` in **both** `deno.json` and
+   `deno.local.json`.
+2. (Opt-in, recommended with sloth) For each event handler: add
+   `@Consumes(Events.X.TYPE)` and **remove the `type = …` field**.
+3. Replace the manual `container.resolve(h.X)` list with
+   `handlers: consumers().map((C) => () => container.resolve(C))`.
+4. Add/keep a side-effect import of the handlers barrel so the decorators run.
+5. `sh ./compile.sh` (service). `init()` throws `handler.type required` if a
+   handler ends up with neither a `@Consumes` type nor a `type` field.
+
+**Not using sloth?** Skip the decorator — the instance/factory `handlers` array
+is unchanged. `@Consumes`/`consumers()` carry no DI-container dependency, but the
+`consumers().map(C => () => container.resolve(C))` wiring assumes a container
+(sloth's `container.resolve`, or your own).
+
+---
+
 ## Conventions
 
 - 2-space indent, no semicolons, single quotes, `if(...)` with no space — match

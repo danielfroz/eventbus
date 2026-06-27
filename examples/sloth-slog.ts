@@ -1,3 +1,4 @@
+// deno-lint-ignore-file no-import-prefix
 /**
  * EventBus fully integrated with @danielfroz/sloth (DI) and @danielfroz/slog
  * (structured logging) — the pattern used by real ACTT services.
