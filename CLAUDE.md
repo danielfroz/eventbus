@@ -129,18 +129,6 @@ the implementation — **do not "simplify" them away**:
    consumer works even before the remote producer has started. "Already exists"
    errors are tolerated (`_alreadyExists`).
 
-### Local Iggy server (localdev)
-
-`../localdev/docker-compose.yml` runs `apache/iggy:0.8.0` (+ `iggy-web-ui:0.3.0`
-on http://localhost:3050). Gotchas:
-
-- **Data path is `/app/local_data`** (relative to the image's `/app` workdir),
-  *not* `/local_data` — mount the volume there or nothing persists.
-- **The root password is auto-generated when `IGGY_ROOT_PASSWORD` is unset**
-  (since Iggy 0.6.0) — `iggy/iggy` will *not* work by default. The compose sets
-  `IGGY_ROOT_USERNAME=iggy` / `IGGY_ROOT_PASSWORD=${IGGY_PASSWORD}` (from
-  `../localdev/.env`). Ports: TCP 8090, HTTP 3000, QUIC 8080.
-
 ### Iggy config (`EventBusIggyConfig`)
 
 `host` (required), `port` (8090), `transport` (`TCP`), `username`/`password`
