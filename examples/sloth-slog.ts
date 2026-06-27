@@ -87,11 +87,11 @@ async function main() {
   container.register(Types.Orders, { useClass: OrderRepo })
 
   // 3. event bus (swap EventBusIggy for EventBusRedis / EventBusJetstream freely)
+  //    URI form: tcp://user:pass@host:port (tls:// for TLS). Defaults: 8090, iggy/iggy.
+  const host = Deno.env.get('IGGY_HOST') ?? '127.0.0.1'
+  const pass = Deno.env.get('IGGY_PASSWORD') ?? 'iggy'
   const bus = new EventBusIggy({
-    host: Deno.env.get('IGGY_HOST') ?? '127.0.0.1',
-    port: 8090,
-    username: 'iggy',
-    password: Deno.env.get('IGGY_PASSWORD') ?? 'iggy',
+    uri: `tcp://iggy:${pass}@${host}:8090`,
     interval: 300,
   })
   container.register<EventBus>(DI.Type<EventBus>('EventBus'), { useValue: bus })

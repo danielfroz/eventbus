@@ -2,6 +2,7 @@
 import { Client, Consumer, Partitioning, PollingStrategy } from './deps.ts'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from '../mod.ts'
+import { parseUri } from '../uri.ts'
 
 /**
  * CompressionAlgorithm.None as understood by the Iggy binary protocol.
@@ -17,26 +18,11 @@ const TOPIC = 'events'
 
 export interface EventBusIggyConfig {
   /**
-   * Iggy server hostname (eg.: 127.0.0.1 or iggy.svc.cluster.local)
+   * Connection URI, eg. `tcp://iggy:iggy@localhost:8090`. The scheme selects the
+   * transport: `tcp://` → TCP (default), `tls://` → TLS. Missing port defaults
+   * to 8090; missing credentials default to `iggy`/`iggy`.
    */
-  host: string
-  /**
-   * Iggy TCP port. Defaults to 8090.
-   */
-  port?: number
-  /**
-   * Transport used to reach the server. Only TCP/TLS are supported by the
-   * underlying client. Defaults to 'TCP'.
-   */
-  transport?: 'TCP' | 'TLS'
-  /**
-   * Username used for authentication. Defaults to 'iggy'.
-   */
-  username?: string
-  /**
-   * Password used for authentication. Defaults to 'iggy'.
-   */
-  password?: string
+  uri: string
   /**
    * Number of partitions created for the producer topic. Defaults to 1
    * (single partition preserves global ordering, mirroring Redis Streams /
@@ -67,12 +53,20 @@ export class EventBusIggy implements EventBus {
   private iconfig?: Config
   private config: EventBusIggyConfig
   /**
+   * Connection details parsed from config.uri
+   */
+  private host: string
+  private port: number
+  private transport: 'TCP' | 'TLS'
+  private username: string
+  private password: string
+  /**
    * Single pooled Iggy client used for both publishing and polling.
    */
   private client?: Client
   private handlers = new Map<string, EventHandler<Event>>()
   private sources = new Array<ConsumeSource>()
-  private interval?: number
+  private interval?: ReturnType<typeof setInterval>
   /**
    * Indicates that a poll cycle is currently in flight (avoids stacking runs).
    */
@@ -81,18 +75,21 @@ export class EventBusIggy implements EventBus {
   constructor(config: EventBusIggyConfig) {
     if(!config)
       throw new ArgumentError('config')
-    if(!config.host)
-      throw new ArgumentError('config.host')
+    if(!config.uri)
+      throw new ArgumentError('config.uri')
 
     this.config = config
-    this.config.port = this.config.port ?? 8090
-    this.config.transport = this.config.transport ?? 'TCP'
-    this.config.username = this.config.username ?? 'iggy'
-    this.config.password = this.config.password ?? 'iggy'
     this.config.partitions = this.config.partitions ?? 1
     this.config.batch = this.config.batch ?? 100
     this.config.interval = this.config.interval ?? 500
     this.config.trace = this.config.trace ?? false
+
+    const u = parseUri(config.uri)
+    this.host = u.hostname
+    this.port = u.port ?? 8090
+    this.transport = u.protocol === 'tls' ? 'TLS' : 'TCP'
+    this.username = u.username ?? 'iggy'
+    this.password = u.password ?? 'iggy'
   }
 
   async init(config: Config): Promise<void> {
@@ -110,9 +107,9 @@ export class EventBusIggy implements EventBus {
 
     try {
       this.client = new Client({
-        transport: this.config.transport!,
-        options: { host: this.config.host, port: this.config.port! } as any,
-        credentials: { username: this.config.username!, password: this.config.password! },
+        transport: this.transport,
+        options: { host: this.host, port: this.port } as any,
+        credentials: { username: this.username, password: this.password },
       })
       // producer setup: ensure our own stream + topic exist so we can publish.
       // The first command (stream.get) lazily connects + authenticates and so
@@ -127,7 +124,7 @@ export class EventBusIggy implements EventBus {
       throw new NetworkError({
         producer,
         instance,
-        message: `EventBusIggy; configuration: ${JSON.stringify({ ...this.config, password: '***' })}; init failed: ${error.message}`,
+        message: `EventBusIggy; host: ${this.host}:${this.port} (${this.transport}); init failed: ${error.message}`,
         stack: `${error.stack}`,
       })
     }

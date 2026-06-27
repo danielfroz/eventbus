@@ -100,7 +100,7 @@ Deno.test({
   fn: async () => {
     await roundtrip(async (handler) => {
       const producer = uniqueProducer('redis')
-      const bus = new EventBusRedis({ hostname: HOST, port: 6379 })
+      const bus = new EventBusRedis({ uri: `redis://${HOST}:6379` })
       await bus.init({
         producer,
         consuming: [producer],
@@ -123,7 +123,7 @@ Deno.test({
   fn: async () => {
     await roundtrip(async (handler) => {
       const producer = uniqueProducer('js')
-      const bus = new EventBusJetstream({ servers: [`${HOST}:4222`] })
+      const bus = new EventBusJetstream({ uri: `nats://${HOST}:4222` })
       await bus.init({
         producer,
         consuming: [producer],
@@ -145,10 +145,7 @@ Deno.test({
     await roundtrip(async (handler) => {
       const producer = uniqueProducer('iggy')
       const bus = new EventBusIggy({
-        host: HOST,
-        port: 8090,
-        username: 'iggy',
-        password: 'iggy',
+        uri: `tcp://iggy:iggy@${HOST}:8090`,
         interval: 300,
       })
       await bus.init({

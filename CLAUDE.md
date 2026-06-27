@@ -131,9 +131,16 @@ the implementation — **do not "simplify" them away**:
 
 ### Iggy config (`EventBusIggyConfig`)
 
-`host` (required), `port` (8090), `transport` (`TCP`), `username`/`password`
-(`iggy`/`iggy`), `partitions` (1), `batch` (100 msgs/poll), `interval` (500ms),
-`trace`.
+`uri` (required) — `tcp://[user:pass@]host[:port]`; `tls://` selects TLS,
+otherwise TCP. Defaults derived from the uri: port `8090`, creds `iggy`/`iggy`.
+Plus `partitions` (1), `batch` (100 msgs/poll), `interval` (500ms), `trace`.
+
+All three adapters share this **uri-based** config (`src/uri.ts` → `parseUri`):
+`EventBusRedis { uri, trace? }` (`redis://…`, port 6379), `EventBusJetstream
+{ uri }` (`nats://…` or `host:port`, port 4222), `EventBusIggy { uri, … }`.
+Redis/Jetstream ignore the scheme; only Iggy reads it (transport). The parser
+accepts a scheme-less `host:port` too. Connection error messages deliberately
+omit credentials (no `JSON.stringify(config)`).
 
 ---
 
@@ -181,13 +188,32 @@ import `asserts` (see `deno.json` import map).
 
 ---
 
-## Migrating 0.1.5 / 0.1.6 → 0.2.0
+## Migrating 0.1.5 / 0.1.6 → 0.2.x
 
-**0.2.0 is backward compatible** — bumping the dependency alone needs no code
-changes. The only interface change is additive: `EventHandler.type` is now
-optional (`type?: string`). Existing handlers (with a `type` field) and existing
+**0.2.0 was backward compatible** — the only interface change was additive:
+`EventHandler.type` became optional (`type?: string`); existing handlers and
 `handlers: [instance]` / `handlers: [() => instance]` wiring keep working. The
-items below are **opt-in**.
+async-factory and `@Consumes()` items below are **opt-in**.
+
+**0.2.1 is BREAKING for adapter construction** — every adapter now takes a single
+`uri` instead of separate connection fields:
+
+```ts
+// before (0.1.x / 0.2.0)
+new EventBusRedis({ hostname, port, username, password })
+new EventBusJetstream({ servers: [ uri ] })
+new EventBusIggy({ host, port, transport, username, password })
+
+// after (0.2.1)
+new EventBusRedis({ uri: 'redis://[user:pass@]host[:port]' })          // port → 6379
+new EventBusJetstream({ uri: 'nats://host[:port]' })                   // or 'host:port'; port → 4222
+new EventBusIggy({ uri: 'tcp://[user:pass@]host[:port]' })             // tls:// for TLS; port → 8090, creds → iggy/iggy
+```
+
+Non-connection options (`partitions`/`batch`/`interval`/`trace` on Iggy,
+`trace` on Redis) are unchanged. ACTT services that build the bus from a
+secret-service URI just pass it straight through as `uri` (Jetstream no longer
+needs the `servers: [uri]` array wrapper).
 
 ### New: async / lazy handler factories
 

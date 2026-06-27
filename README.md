@@ -112,7 +112,7 @@ export class UserCreatedHandler implements EventHandler<UserCreated> {
 ```ts
 import { EventBusRedis } from '@danielfroz/eventbus/redis'
 
-const bus = new EventBusRedis({ hostname: '127.0.0.1', port: 6379 })
+const bus = new EventBusRedis({ uri: 'redis://127.0.0.1:6379' })
 
 await bus.init({
   producer: 'identity',                       // this service's name
@@ -135,7 +135,7 @@ await bus.destroy()
 ```ts
 import { EventBusRedis } from '@danielfroz/eventbus/redis'
 
-const bus = new EventBusRedis({ hostname: '127.0.0.1', port: 6379 })
+const bus = new EventBusRedis({ uri: 'redis://127.0.0.1:6379' })
 
 await bus.init({
   producer: 'billing',                  // consumer-group name
@@ -164,11 +164,7 @@ All three implement the same `EventBus` interface; only construction differs.
 import { EventBusIggy } from '@danielfroz/eventbus/iggy'
 
 const bus = new EventBusIggy({
-  host: '127.0.0.1',
-  port: 8090,            // TCP, default 8090
-  username: 'iggy',      // default 'iggy'
-  password: 'iggy',      // default 'iggy'
-  // transport: 'TCP',   // 'TCP' | 'TLS'
+  uri: 'tcp://iggy:iggy@127.0.0.1:8090',  // tls:// selects TLS; defaults: 8090, iggy/iggy
   // partitions: 1,      // partitions for this producer's topic
   // batch: 100,         // messages fetched per poll
   // interval: 500,      // poll interval (ms)
@@ -194,10 +190,7 @@ subscribing service.
 import { EventBusRedis } from '@danielfroz/eventbus/redis'
 
 const bus = new EventBusRedis({
-  hostname: '127.0.0.1',
-  port: 6379,            // default 6379
-  // username: '...',    // optional ACL user
-  // password: '...',    // optional
+  uri: 'redis://127.0.0.1:6379',          // redis://[user:pass@]host[:port]; scheme ignored
 })
 
 await bus.init({
@@ -218,7 +211,7 @@ groups and `XACK` after handling.
 import { EventBusJetstream } from '@danielfroz/eventbus/jetstream'
 
 const bus = new EventBusJetstream({
-  servers: ['127.0.0.1:4222'],   // one or more NATS servers
+  uri: 'nats://127.0.0.1:4222',  // or just '127.0.0.1:4222'; scheme ignored, port defaults to 4222
 })
 
 await bus.init({
@@ -342,9 +335,13 @@ await bus.init({
 
 | Backend | Constructor options |
 |---------|---------------------|
-| `EventBusRedis` | `{ hostname, port?=6379, username?, password?, trace? }` |
-| `EventBusJetstream` | `{ servers: string[] }` |
-| `EventBusIggy` | `{ host, port?=8090, transport?='TCP', username?='iggy', password?='iggy', partitions?=1, batch?=100, interval?=500, trace? }` |
+| `EventBusRedis` | `{ uri, trace? }` — `uri`: `redis://[user:pass@]host[:port]` (port → 6379) |
+| `EventBusJetstream` | `{ uri }` — `uri`: `nats://host[:port]` or `host[:port]` (port → 4222) |
+| `EventBusIggy` | `{ uri, partitions?=1, batch?=100, interval?=500, trace? }` — `uri`: `tcp://[user:pass@]host[:port]` (`tls://` for TLS; port → 8090, creds → iggy/iggy) |
+
+All connection details (host, port, credentials, and — for Iggy — the transport
+via `tcp://`/`tls://`) come from the `uri`. The scheme is ignored by Redis and
+Jetstream. Missing parts fall back to the defaults above.
 
 ---
 

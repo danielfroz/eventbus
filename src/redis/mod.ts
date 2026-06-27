@@ -2,13 +2,15 @@
 import { r } from './deps.ts'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts"
+import { parseUri } from '../uri.ts'
 import type * as i from './mod.ts'
 
 export interface EventBusRedisConfig {
-  hostname: string
-  port?: number | string
-  username?: string
-  password?: string
+  /**
+   * Connection URI, eg. `redis://[user:pass@]host[:port]`. The scheme is
+   * ignored; missing port defaults to 6379.
+   */
+  uri: string
   trace?: boolean
 }
 
@@ -26,23 +28,34 @@ export class EventBusRedis implements EventBus {
    * Redis configuration
    */
   private config: i.EventBusRedisConfig
-  private handlers = new Map<string, EventHandler<Event>>()
-  private interval?: number
   /**
-   * Indicates if running 
+   * Connection details parsed from config.uri
+   */
+  private hostname: string
+  private port: number
+  private username?: string
+  private password?: string
+  private handlers = new Map<string, EventHandler<Event>>()
+  private interval?: ReturnType<typeof setInterval>
+  /**
+   * Indicates if running
    */
   private running?: boolean
 
   constructor(config: i.EventBusRedisConfig) {
     if(!config)
       throw new ArgumentError('config')
-    if(!config.hostname)
-      throw new ArgumentError('config.hostname')
+    if(!config.uri)
+      throw new ArgumentError('config.uri')
 
     this.config = config
-    if(!this.config.port)
-      this.config.port = 6379
     this.config.trace = this.config.trace ?? false
+
+    const u = parseUri(config.uri)
+    this.hostname = u.hostname
+    this.port = u.port ?? 6379
+    this.username = u.username
+    this.password = u.password
   }
 
   async init(config: Config): Promise<void> {
@@ -62,18 +75,18 @@ export class EventBusRedis implements EventBus {
 
     const connect = async (): Promise<r.Redis> => {
       try {
-        const descriptor = await r.connect({ hostname: this.config.hostname, port: this.config.port })
-        if(this.config.username != null && this.config.password != null)
-          await descriptor.auth(this.config.username, this.config.password)
-        else if(this.config.password != null)
-          await descriptor.auth(this.config.password)
+        const descriptor = await r.connect({ hostname: this.hostname, port: this.port })
+        if(this.username != null && this.password != null)
+          await descriptor.auth(this.username, this.password)
+        else if(this.password != null)
+          await descriptor.auth(this.password)
         return descriptor
       }
       catch(error: Error | any) {
         throw new NetworkError({
           producer,
           instance,
-          message: `EventBusRedis; configuration: ${JSON.stringify(this.config)}; connect failed: ${error}`,
+          message: `EventBusRedis; host: ${this.hostname}:${this.port}; connect failed: ${error}`,
           stack: `${error.stack}`
         })
       }

@@ -1,6 +1,6 @@
 {
   "name": "@danielfroz/eventbus",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "EventBus library for event-driven architecture services",
   "license": "MIT",
   "exports": {
@@ -20,7 +20,12 @@
     "exclude": [
       ".git",
       ".github",
+      ".gitignore",
       ".vscode",
+      ".claude",
+      "CLAUDE.md",
+      "docker-compose.yml",
+      "test.sh",
       "examples",
       "**/*_test.ts"
     ]

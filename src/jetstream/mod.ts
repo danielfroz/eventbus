@@ -2,9 +2,14 @@
 import { ConsoleLog, NATS, NATSC, NATSJ } from './deps.ts';
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts';
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts";
+import { parseUri } from '../uri.ts';
 
 export interface EventBusJetstreamConfig {
-  servers: string[]
+  /**
+   * Connection URI, eg. `nats://host:4222` or simply `host:4222`. The scheme is
+   * ignored; missing port defaults to 4222.
+   */
+  uri: string
 }
 
 export class EventBusJetstream implements EventBus {
@@ -15,22 +20,31 @@ export class EventBusJetstream implements EventBus {
   private jsc?: NATSJ.JetStreamClient
   private subj?: string
   private running: boolean
-  private intervals?: Array<number>
+  private intervals?: Array<ReturnType<typeof setInterval>>
   private handlers = new Map<string, EventHandler<Event>>()
+  /**
+   * NATS server (`host:port`) parsed from config.uri; protocol is ignored.
+   */
+  private readonly servers: string[]
 
-  constructor(private readonly jscfg: EventBusJetstreamConfig) {
+  constructor(jscfg: EventBusJetstreamConfig) {
+    if(!jscfg)
+      throw new ArgumentError('config')
+    if(!jscfg.uri)
+      throw new ArgumentError('config.uri')
+    const u = parseUri(jscfg.uri)
+    this.servers = [ `${u.hostname}:${u.port ?? 4222}` ]
     this.running = false
   }
 
   async connect(): Promise<NATS.NatsConnection> {
-    const CONFIG = this.jscfg
     try {
       return await NATSC.connect({
-        servers: CONFIG.servers
+        servers: this.servers
       })
     }
     catch(err: Error|any) {
-      throw new InitError(`connect failed: ${JSON.stringify(this.jscfg.servers)}; err: ${err.message}`)
+      throw new InitError(`connect failed: ${JSON.stringify(this.servers)}; err: ${err.message}`)
     }
   }
 
@@ -128,7 +142,7 @@ export class EventBusJetstream implements EventBus {
         consumers.push({ stream, consumer })
       }
 
-      this.intervals = new Array<number>()
+      this.intervals = new Array<ReturnType<typeof setInterval>>()
       this.intervals.push(setInterval(async () => {
         this.running = true
         try {
