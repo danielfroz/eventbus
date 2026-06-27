@@ -185,6 +185,34 @@ Iggy organizes data as *stream → topic → partition*. This library maps one
 single `events` topic, and consumes via a consumer group named after the
 subscribing service.
 
+#### Message expiry
+
+`expiry` sets how long the Iggy server retains messages on the topic, in
+**seconds**. Messages older than `expiry` are deleted by the server, bounding
+disk usage and replay history.
+
+- **Default `86400` (1 day)** — chosen to mirror the NATS Jetstream adapter's
+  1-day `max_age`, so the two persistent backends behave consistently.
+- **`0` = never expire** — keep messages forever (until other retention limits
+  apply).
+- The value is applied as the topic's expiry on every topic the bus ensures at
+  `init()` (its own producer topic and any consuming topics it creates). It is
+  set **at topic-creation time**; changing `expiry` later does not retroactively
+  update an existing topic.
+
+```ts
+const bus = new EventBusIggy({
+  uri: 'tcp://iggy:iggy@127.0.0.1:8090',
+  expiry: 7 * 24 * 3600,   // keep messages for 7 days
+})
+```
+
+> Note: the underlying `apache-iggy` client (0.8.0) misreports `messageExpiry`
+> when reading a topic back, so verify configured expiry via the Iggy HTTP API
+> (`GET /streams/{stream}/topics/{topic}` → `message_expiry`, in microseconds),
+> not the TCP client. The write path is correct (`expiry: 60` ⇒
+> `message_expiry: 60000000`).
+
 ### Redis Streams
 
 ```ts
