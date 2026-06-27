@@ -1,0 +1,32 @@
+# Brokers for running `deno test -A` (src/mod_test.ts).
+# Self-contained: no UI services, no volumes (ephemeral state, fresh per run).
+#
+#   docker compose up -d      # start redis + nats(jetstream) + iggy
+#   deno test -A              # round-trip tests probe each port and skip if down
+#   docker compose down       # tear down
+services:
+  redis:
+    image: redis:8.4.0-alpine
+    container_name: eventbus-test-redis
+    command: redis-server --save "" --appendonly no --loglevel warning
+    ports:
+      - 6379:6379
+
+  nats:
+    image: nats:2.12.3-alpine
+    container_name: eventbus-test-nats
+    command: nats-server -js -sd /tmp/js
+    ports:
+      - 4222:4222
+
+  iggy:
+    image: apache/iggy:0.8.0
+    container_name: eventbus-test-iggy
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - IGGY_TCP_ADDRESS=0.0.0.0:8090
+      - IGGY_ROOT_USERNAME=iggy
+      - IGGY_ROOT_PASSWORD=iggy
+    ports:
+      - 8090:8090

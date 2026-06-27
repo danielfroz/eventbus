@@ -1,8 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import { ConsoleLog } from "@danielfroz/slog";
-import * as NATSJ from 'jsr:@nats-io/jetstream@3.1.0';
-import * as NATS from 'jsr:@nats-io/nats-core@3.1.0';
-import * as NATSC from 'jsr:@nats-io/transport-deno@3.1.0';
+import { ConsoleLog, NATS, NATSC, NATSJ } from './deps.ts';
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts';
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts";
 

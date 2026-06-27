@@ -1,0 +1,184 @@
+# EventBus SDK
+
+Deno/TypeScript library that gives ACTT services an opinionated, event-driven
+messaging abstraction over a pluggable broker. Published to JSR as
+`@danielfroz/eventbus` (see `deno.json`); CI publishes on push to `main` via
+`npx jsr publish`.
+
+> ⚠️ Pre-1.0 — interfaces and contracts may still change.
+
+---
+
+## Architecture
+
+A small, broker-agnostic core (`src/`) plus one self-contained adapter per
+broker, each exported as a subpath:
+
+| Export | File | Backend |
+|--------|------|---------|
+| `@danielfroz/eventbus` | `src/mod.ts` | Core types only (no broker) |
+| `@danielfroz/eventbus/redis` | `src/redis/mod.ts` | Redis Streams (`jsr:@db/redis`) |
+| `@danielfroz/eventbus/jetstream` | `src/jetstream/mod.ts` | NATS Jetstream (`jsr:@nats-io/*`) |
+| `@danielfroz/eventbus/iggy` | `src/iggy/mod.ts` | Apache Iggy (`npm:apache-iggy`) |
+
+### Core contracts (`src/`)
+
+- **`EventBus`** (`EventBus.ts`) — the interface every adapter implements:
+  `init(config)`, `publish(event)`, `destroy()`.
+- **`Event`** (`Event.ts`) — minimal envelope: `type`, `id`, `sid`, `author?`,
+  `ts?`. Domain payload fields are added by extending `Event`.
+- **`EventHandler<T>`** (`EventHandler.ts`) — `{ type, handle(event) }`.
+- **`Config`** (`Config.ts`) — runtime config passed to `init()`. Key fields:
+  - `producer` — this service's name; **also the consumer-group name** and the
+    name of the stream/topic this service publishes to.
+  - `instance` — unique per-process id (defaults to `producer.<epoch>`).
+  - `consuming` — list of **other producers'** streams to subscribe to. Omit it
+    for a publisher-only bus.
+  - `handlers` — `EventHandler` instances or zero-arg factories (predicates).
+  - `encode`/`decode` — optional custom (de)serialization; default is JSON.
+  - `error` — required; receives transport/`NetworkError`s.
+  - `errorHandler` — required **when consuming**; receives `EventHandlerError`s
+    (failed handler, malformed event) for DLQ-style handling.
+- **Errors** (`Errors.ts`) — `EventBusError` base; `ArgumentError`,
+  `InitError`, `NetworkError`, `EventHandlerError`.
+
+### The shared adapter shape
+
+All three adapters follow the same lifecycle, so read one to understand the
+others:
+
+1. `init()` validates `Config`, connects, and ensures the **producer** topology
+   exists (so `publish` works even with no consumers).
+2. If `config.consuming` is set, it requires `errorHandler` + `handlers`,
+   registers handlers into a `Map<type, handler>`, ensures each consuming
+   source, then starts a `setInterval` poll loop guarded by a `running` flag
+   (prevents overlapping cycles).
+3. Per polled message: decode → validate (`type`/`sid`/`id`/`ts`) → dispatch to
+   the handler by `type` → **acknowledge** (Redis `xack` / Jetstream `msg.ack`
+   / Iggy `offset.store`). Validation failures and handler throws are routed to
+   `errorHandler`, then acked anyway — mirroring a "finally ack" so a poison
+   message never blocks the stream.
+4. `destroy()` clears the interval, waits for the in-flight cycle to drain
+   (`running`), then closes connections.
+
+---
+
+## Concept mapping across brokers
+
+| Concept | Redis | Jetstream | Iggy |
+|---------|-------|-----------|------|
+| Publish target | stream key = `producer` | stream `producer`, subject `producer` | stream `producer`, topic `events` |
+| Subscription unit | consumer group = `producer` on each consuming key | durable consumer = `producer` on each consuming stream | consumer group = `producer` on each consuming stream's `events` topic |
+| Ack | `xack` | `msg.ack()` | `offset.store` (autocommit off) |
+
+Iggy adds a stream→topic→partition hierarchy the others lack. We model **one
+service = one stream**, funnelling all of that service's events through a single
+topic named `events` (`TOPIC` in `src/iggy/mod.ts`), single partition by default
+(preserves global ordering, like the other two backends).
+
+---
+
+## Apache Iggy adapter — critical knowledge
+
+The Iggy adapter (`src/iggy/mod.ts`) runs the `npm:apache-iggy` client under
+Deno. Several non-obvious behaviours were found the hard way and are baked into
+the implementation — **do not "simplify" them away**:
+
+1. **Never call zero-payload commands (`system.ping`, `system.getStats`).** The
+   client serializes commands with `Buffer.fill(payload, 8)`; for an empty
+   payload Deno's `node:Buffer` polyfill throws
+   `ERR_INVALID_ARG_VALUE: ... Received <Buffer >`. Node tolerates it; Deno does
+   not. Every command we use (login, stream/topic/group create+get, send, poll,
+   offset.store) carries a payload and is fine. Connectivity/credentials are
+   fail-fast-checked by the first real command (`stream.get`) inside `init`,
+   not by `ping`.
+
+2. **`get*` returns `null`/`undefined` for a missing entity — it does not
+   throw.** Existence checks (`_exists`) must inspect the return value, not rely
+   on `try/catch`. Getting this wrong silently skips creation.
+
+3. **The server auto-assigns stream/topic/group IDs.** `create*` takes only a
+   `name` (+ topic/group parents); reference everything by name afterwards
+   (`Id = number | string`). Do not invent numeric IDs.
+
+4. **At-least-once via manual offset commit.** Poll uses
+   `autocommit: false` + `PollingStrategy.Next` + `Consumer.Group(producer)`,
+   and stores the offset (`partitionId: null` for groups) **after** the handler
+   runs. A crash mid-handle redelivers on the next poll. Verified: restarting a
+   bus on the same group does not redeliver already-committed messages.
+
+5. **Idempotent topology.** `init` creates the producer's own stream+topic, and
+   for each consuming source creates the stream+topic+group then joins — so a
+   consumer works even before the remote producer has started. "Already exists"
+   errors are tolerated (`_alreadyExists`).
+
+### Local Iggy server (localdev)
+
+`../localdev/docker-compose.yml` runs `apache/iggy:0.8.0` (+ `iggy-web-ui:0.3.0`
+on http://localhost:3050). Gotchas:
+
+- **Data path is `/app/local_data`** (relative to the image's `/app` workdir),
+  *not* `/local_data` — mount the volume there or nothing persists.
+- **The root password is auto-generated when `IGGY_ROOT_PASSWORD` is unset**
+  (since Iggy 0.6.0) — `iggy/iggy` will *not* work by default. The compose sets
+  `IGGY_ROOT_USERNAME=iggy` / `IGGY_ROOT_PASSWORD=${IGGY_PASSWORD}` (from
+  `../localdev/.env`). Ports: TCP 8090, HTTP 3000, QUIC 8080.
+
+### Iggy config (`EventBusIggyConfig`)
+
+`host` (required), `port` (8090), `transport` (`TCP`), `username`/`password`
+(`iggy`/`iggy`), `partitions` (1), `batch` (100 msgs/poll), `interval` (500ms),
+`trace`.
+
+---
+
+## Commands
+
+```bash
+sh ./test.sh                         # validate the codebase: check -> lint -> test
+docker compose up -d && sh ./test.sh # full run incl. broker integration tests
+docker compose down                  # tear down brokers
+
+deno check src/iggy/mod.ts           # type-check a single module while iterating
+```
+
+**`sh ./test.sh` is the single validation entry point** (type-check → lint →
+`deno test -A src/`). Run it before committing. There is no `compile.sh`; tests
+import `asserts` (see `deno.json` import map).
+
+### Tests
+
+- **Unit:** `Errors_test.ts`, `EventHandler_test.ts` — no broker needed.
+- **Integration:** `src/mod_test.ts` runs the same publish→consume round-trip
+  against all three backends. It needs the brokers from the local
+  `docker-compose.yml` (redis 6379 / nats 4222 / iggy 8090, no UI, ephemeral —
+  iggy root password is `iggy/iggy` there). Each test **probes its port and is
+  skipped when the broker is down**, so `sh ./test.sh` stays green without
+  docker. Each run uses a unique alphanumeric producer name to avoid
+  stream/consumer-group state collisions.
+
+> **Dependency note:** each adapter's third-party imports live in a per-adapter
+> `deps.ts` (`src/iggy/deps.ts`, `src/jetstream/deps.ts`, `src/redis/deps.ts`)
+> that re-exports the broker client; the adapter's `mod.ts` imports from
+> `./deps.ts`. These broker clients are intentionally **not** in
+> `deno.json#imports`, so the core package and the other adapters carry no
+> dependency on them — verified with `deno info` (the per-export graphs are
+> disjoint). Two invariants keep this true: **(1)** the root `mod.ts` never
+> imports an adapter (only core types/errors), and **(2)** `deps.ts` is
+> **per-adapter, never a shared root `src/deps.ts`** (a shared one would merge
+> all broker clients into one graph and break isolation). Bonus: `export … from
+> 'npm:'/'jsr:'` re-exports are not flagged by the `no-import-prefix` lint
+> (only `import` is), so this layout is fully lint-clean.
+
+---
+
+## Conventions
+
+- 2-space indent, no semicolons, single quotes, `if(...)` with no space — match
+  the surrounding adapter style.
+- Validate every public-method argument up front and throw `ArgumentError`.
+- Wrap transport failures in `NetworkError` and route through `config.error`;
+  never let a raw client error escape `publish`/the poll loop.
+- Keep each adapter self-contained: a backend's quirks live in its own file.
+- When adding a broker: implement `EventBus`, add the subpath to
+  `deno.json#exports`, and follow the shared adapter shape above.

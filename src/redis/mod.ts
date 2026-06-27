@@ -1,5 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import * as r from 'jsr:@db/redis@0.40.0'
+import { r } from './deps.ts'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts"
 import type * as i from './mod.ts'
