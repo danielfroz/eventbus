@@ -153,19 +153,12 @@ omit credentials (no `JSON.stringify(config)`).
 
 ---
 
-## Commands
+## Testing & dependency isolation
 
-```bash
-sh ./test.sh                         # validate the codebase: check -> lint -> test
-docker compose up -d && sh ./test.sh # full run incl. broker integration tests
-docker compose down                  # tear down brokers
-
-deno check src/iggy/mod.ts           # type-check a single module while iterating
-```
-
-**`sh ./test.sh` is the single validation entry point** (type-check → lint →
-`deno test -A src/`). Run it before committing. There is no `compile.sh`; tests
-import `asserts` (see `deno.json` import map).
+Validation is a single `test.sh` entry point (type-check → lint →
+`deno test -A src/`) — there is **no `compile.sh`**; tests import `asserts` (see
+`deno.json` import map). Broker integration tests need the local
+`docker-compose.yml` brokers up.
 
 ### Tests
 
@@ -302,16 +295,3 @@ Forgetting it ⇒ empty `consumers()` ⇒ no handlers registered.
 is unchanged. `@Consumes`/`consumers()` carry no DI-container dependency, but the
 `consumers().map(C => () => container.resolve(C))` wiring assumes a container
 (sloth's `container.resolve`, or your own).
-
----
-
-## Conventions
-
-- 2-space indent, no semicolons, single quotes, `if(...)` with no space — match
-  the surrounding adapter style.
-- Validate every public-method argument up front and throw `ArgumentError`.
-- Wrap transport failures in `NetworkError` and route through `config.error`;
-  never let a raw client error escape `publish`/the poll loop.
-- Keep each adapter self-contained: a backend's quirks live in its own file.
-- When adding a broker: implement `EventBus`, add the subpath to
-  `deno.json#exports`, and follow the shared adapter shape above.
