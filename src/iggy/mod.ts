@@ -1,8 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
-import { Client, Consumer, Partitioning, PollingStrategy } from './deps.ts'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from '../mod.ts'
 import { parseUri } from '../uri.ts'
+import { Client, Consumer, Partitioning, PollingStrategy } from './deps.ts'
 
 /**
  * CompressionAlgorithm.None as understood by the Iggy binary protocol.
@@ -175,7 +175,20 @@ export class EventBusIggy implements EventBus {
     }
 
     this.running = false
-    this.interval = setInterval(() => this._poll(config), this.config.interval)
+    // _poll must never reject the interval callback (an unhandled rejection
+    // from setInterval crashes the whole Deno process) — belt-and-braces on
+    // top of the guards inside _poll itself.
+    this.interval = setInterval(() => {
+      this._poll(config).catch(async (error: Error | any) => {
+        this.running = false
+        if(config.error) {
+          await config.error(this._network(error))
+            .catch(err => {
+              config.log?.error({ msg: 'config error caught', message: err.message, stack: err.stack })
+            })
+        }
+      })
+    }, this.config.interval)
   }
 
   private async _poll(config: Config): Promise<void> {
@@ -194,16 +207,29 @@ export class EventBusIggy implements EventBus {
       for(const source of this.sources) {
         const { stream, topic, group } = source
 
+        // never throws: a broken errorHandler is reported via config.error and
+        // swallowed, so a single DLQ failure can never escape _poll and crash
+        // the process.
         const handleError = async (args: { message: string, event?: Event, stack?: string }) => {
           const { message, event, stack } = args
-          if(config.errorHandler) {
-            await config.errorHandler(new EventHandlerError({
-              message,
-              stream,
-              producer,
-              event,
-              stack,
-            }))
+          try {
+            if(config.errorHandler) {
+              await config.errorHandler(new EventHandlerError({
+                message,
+                stream,
+                producer,
+                event,
+                stack,
+              }))
+            }
+          }
+          catch(error: Error | any) {
+            if(config.error) {
+              await config.error(this._network(error))
+                .catch(err => {
+                  config.log?.error({ msg: 'errorhandler thrown error', message: err.message, stack: err.stack })
+                })
+            }
           }
         }
 
@@ -234,72 +260,90 @@ export class EventBusIggy implements EventBus {
           // mirrors the ack semantics of the Redis/Jetstream buses: the offset
           // is advanced after the handler runs (success OR routed to the
           // errorHandler), so a crash mid-handle redelivers on the next poll.
+          // never throws: a failed commit is reported via config.error and
+          // swallowed — the message simply redelivers on the next poll rather
+          // than crashing the process.
           const commit = async () => {
-            await this.client!.offset.store({
-              streamId: stream,
-              topicId: topic,
-              consumer: Consumer.Group(group),
-              partitionId: null, // null for group consumers
-              offset: message.headers.offset,
-            })
+            try {
+              await this.client!.offset.store({
+                streamId: stream,
+                topicId: topic,
+                consumer: Consumer.Group(group),
+                partitionId: null, // null for group consumers
+                offset: message.headers.offset,
+              })
+            }
+            catch(error: Error | any) {
+              if(config.error) {
+                await config.error(this._network(error))
+                  .catch(err => {
+                    config.log?.error({ msg: 'config error caught', message: err.message, stack: err.stack })
+                  })
+              }
+            }
           }
 
-          const content = new TextDecoder().decode(message.payload)
-          if(content == null || content.length === 0) {
-            await handleError({ message: 'message.content.required' })
-            await commit()
-            continue
-          }
+          // decode -> validate -> dispatch as one guarded unit: any throw (a
+          // malformed payload, a synchronously-throwing handler, ...) is
+          // routed to handleError instead of escaping _poll — a poison
+          // message must never block or kill the stream. The offset is
+          // always committed on the way out via `finally`.
+          try {
+            const content = new TextDecoder().decode(message.payload)
+            if(content == null || content.length === 0) {
+              await handleError({ message: 'message.content.required' })
+              continue
+            }
 
-          const event = config.decode ?
-            await config.decode(content) :
-            JSON.parse(content) as Event
+            const event = config.decode ?
+              await config.decode(content) :
+              JSON.parse(content) as Event
 
-          if(!event) {
-            await handleError({ message: 'event.required' })
-            await commit()
-            continue
-          }
-          if(!event.type) {
-            await handleError({ message: 'event.type.required', event })
-            await commit()
-            continue
-          }
-          if(!event.sid) {
-            await handleError({ message: 'event.sid.required' })
-            await commit()
-            continue
-          }
-          if(!event.id) {
-            await handleError({ message: 'event.id.required', event })
-            await commit()
-            continue
-          }
-          if(!event.ts) {
-            await handleError({ message: 'event.ts.required', event })
-            await commit()
-            continue
-          }
+            if(!event) {
+              await handleError({ message: 'event.required' })
+              continue
+            }
+            if(!event.type) {
+              await handleError({ message: 'event.type.required', event })
+              continue
+            }
+            if(!event.sid) {
+              await handleError({ message: 'event.sid.required' })
+              continue
+            }
+            if(!event.id) {
+              await handleError({ message: 'event.id.required', event })
+              continue
+            }
+            if(!event.ts) {
+              await handleError({ message: 'event.ts.required', event })
+              continue
+            }
 
-          const handler = this.handlers.get(event.type)
-          if(!handler) {
-            if(config.log)
-              config.log.trace({ msg: `no handler for event: ${event.type}` })
+            const handler = this.handlers.get(event.type)
+            if(!handler) {
+              if(config.log)
+                config.log.trace({ msg: `no handler for event: ${event.type}` })
+              continue
+            }
+
+            if(config.log) {
+              config.log.trace({ msg: 'exec handler', stream, instance, handler: handler.constructor.name, event })
+            }
+
+            try {
+              await handler.handle(event)
+            }
+            catch(error: Error | any) {
+              await handleError({ message: `${error?.message ?? error}`, stack: `${error?.stack}`, event })
+            }
+          }
+          catch(error: Error | any) {
+            await handleError({ message: `${error?.message ?? error}`, stack: `${error?.stack}` })
+          }
+          finally {
             await commit()
-            continue
           }
-
-          if(config.log) {
-            config.log.trace({ msg: 'exec handler', stream, instance, handler: handler.constructor.name, event })
-          }
-
-          await handler.handle(event)
-            .catch(async (err: Error) => {
-              await handleError({ message: err.message, stack: `${err.stack}`, event })
-            })
-            .finally(async () => {
-              await commit()
-            })
         } // !for message
       } // !for source
     }

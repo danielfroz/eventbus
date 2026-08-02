@@ -1,5 +1,7 @@
 # EventBus SDK
 
+@/opt/actt/Services/claude/CLAUDE.md
+
 Deno/TypeScript library that gives ACTT services an opinionated, event-driven
 messaging abstraction over a pluggable broker. Published to JSR as
 `@danielfroz/eventbus` (see `deno.json`); CI publishes on push to `main` via

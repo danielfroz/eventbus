@@ -1,8 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
-import { ConsoleLog, NATS, NATSC, NATSJ } from './deps.ts';
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts';
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts";
 import { parseUri } from '../uri.ts';
+import { ConsoleLog, NATS, NATSC, NATSJ } from './deps.ts';
 
 export interface EventBusJetstreamConfig {
   /**
@@ -143,93 +143,153 @@ export class EventBusJetstream implements EventBus {
       }
 
       this.intervals = new Array<ReturnType<typeof setInterval>>()
-      this.intervals.push(setInterval(async () => {
-        this.running = true
-        try {
-          for(const c of consumers) {
-            const { stream, consumer } = c
-
-            // helper
-            const handleError = async (args: { message: string, producer?: string, event?: Event, stack?: string }) => {
-              const { message, event, stack } = args
-              if(config.errorHandler) {
-                await config.errorHandler(new EventHandlerError({
-                  message,
-                  stream,
-                  producer,
-                  event,
-                  stack,
-                }))
-              }
-            }
-
-            const msgs = await consumer.fetch({ expires: 2000 })
-            for await (const msg of msgs) {
-              // deno-lint-ignore require-await
-              const ack = async () => {
-                msg.ack()
-              }
-
-              const json = new TextDecoder().decode(msg.data)
-              const event = config.decode ? 
-                await config.decode(json):
-                JSON.parse(json) as Event
-
-              if(!event) {
-                await handleError({ message: 'event.required' })
-                await ack()
-                continue
-              }
-              if(!event.type) {
-                await handleError({ message: 'event.type.required', event })
-                await ack()
-                continue
-              }
-              if(!event.sid) {
-                await handleError({ message: 'event.sid.required'})
-                await ack()
-                continue
-              }
-              if(!event.id) {
-                await handleError({ message: 'event.id.required', event })
-                await ack()
-                continue;
-              }
-              if(!event.ts) {
-                await handleError({ message: 'event.ts.required', event })
-                await ack()
-                continue
-              }
-
-              const handler = this.handlers.get(event.type)
-              if(!handler) {
-                if(config.log)
-                  config.log.trace({ msg: `no handler for event: ${event.type}` })
-                await ack()
-                continue
-              }
-
-              if(config.log) {
-                config.log.trace({ msg: 'exec handler', stream, instance: config.instance, handler: handler.constructor.name, event })
-              }
-
-              await handler.handle(event)
-                .catch(async (err: Error) => {
-                  await handleError({ message: err.message, stack: `${err.stack}`, event })
-                })
-                .finally(async () => {
-                  await ack()
-                })
-            }
-          } // !for
-        }
-        finally {
+      // _poll must never reject the interval callback (an unhandled rejection
+      // from setInterval crashes the whole Deno process) — belt-and-braces on
+      // top of the guards inside _poll itself.
+      this.intervals.push(setInterval(() => {
+        this._poll(config, consumers, producer).catch(async (error: Error | any) => {
           this.running = false
-        }
+          const nerror = new NetworkError({ producer, instance: config.instance!, message: error.message, stack: `${error.stack}` })
+          if(config.error) {
+            await config.error(nerror)
+              .catch(err => {
+                config.log?.error({ msg: 'config error caught', message: err.message, stack: err.stack })
+              })
+          }
+        })
       }, 1000))
     }
     catch(err) {
       throw err
+    }
+  }
+
+  private async _poll(
+    config: Config,
+    consumers: Array<{ stream: string, consumer: NATSJ.Consumer }>,
+    producer: string,
+  ): Promise<void> {
+    this.running = true
+    try {
+      for(const c of consumers) {
+        const { stream, consumer } = c
+
+        // never throws: a broken errorHandler is reported via config.error and
+        // swallowed, so a single DLQ failure can never escape _poll and crash
+        // the process.
+        const handleError = async (args: { message: string, producer?: string, event?: Event, stack?: string }) => {
+          const { message, event, stack } = args
+          try {
+            if(config.errorHandler) {
+              await config.errorHandler(new EventHandlerError({
+                message,
+                stream,
+                producer,
+                event,
+                stack,
+              }))
+            }
+          }
+          catch(error: Error | any) {
+            if(config.error) {
+              await config.error(new NetworkError({ producer, instance: config.instance!, message: error.message, stack: `${error.stack}` }))
+                .catch(err => {
+                  config.log?.error({ msg: 'errorhandler thrown error', message: err.message, stack: err.stack })
+                })
+            }
+          }
+        }
+
+        let msgs
+        try {
+          msgs = await consumer.fetch({ expires: 2000 })
+        }
+        catch(error: Error | any) {
+          const nerror = new NetworkError({ producer, instance: config.instance!, message: error.message, stack: `${error.stack}` })
+          if(config.error)
+            await config.error(nerror)
+          continue
+        }
+
+        for await (const msg of msgs) {
+          // never throws: a failed ack is reported via config.error and
+          // swallowed — the message simply redelivers on the next poll rather
+          // than crashing the process.
+          const ack = async () => {
+            try {
+              msg.ack()
+            }
+            catch(error: Error | any) {
+              if(config.error) {
+                await config.error(new NetworkError({ producer, instance: config.instance!, message: error.message, stack: `${error.stack}` }))
+                  .catch(err => {
+                    config.log?.error({ msg: 'config error caught', message: err.message, stack: err.stack })
+                  })
+              }
+            }
+          }
+
+          // decode -> validate -> dispatch as one guarded unit: any throw (a
+          // malformed payload, a synchronously-throwing handler, ...) is
+          // routed to handleError instead of escaping _poll — a poison
+          // message must never block or kill the stream. The message is
+          // always acked on the way out via `finally`.
+          try {
+            const json = new TextDecoder().decode(msg.data)
+            const event = config.decode ?
+              await config.decode(json):
+              JSON.parse(json) as Event
+
+            if(!event) {
+              await handleError({ message: 'event.required' })
+              continue
+            }
+            if(!event.type) {
+              await handleError({ message: 'event.type.required', event })
+              continue
+            }
+            if(!event.sid) {
+              await handleError({ message: 'event.sid.required'})
+              continue
+            }
+            if(!event.id) {
+              await handleError({ message: 'event.id.required', event })
+              continue
+            }
+            if(!event.ts) {
+              await handleError({ message: 'event.ts.required', event })
+              continue
+            }
+
+            const handler = this.handlers.get(event.type)
+            if(!handler) {
+              if(config.log)
+                config.log.trace({ msg: `no handler for event: ${event.type}` })
+              continue
+            }
+
+            if(config.log) {
+              config.log.trace({ msg: 'exec handler', stream, instance: config.instance, handler: handler.constructor.name, event })
+            }
+
+            try {
+              await handler.handle(event)
+            }
+            catch(error: Error | any) {
+              await handleError({ message: `${error?.message ?? error}`, stack: `${error?.stack}`, event })
+            }
+          }
+          catch(error: Error | any) {
+            await handleError({ message: `${error?.message ?? error}`, stack: `${error?.stack}` })
+          }
+          finally {
+            await ack()
+          }
+        }
+      } // !for
+    }
+    finally {
+      this.running = false
     }
   }
   

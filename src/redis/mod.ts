@@ -1,8 +1,8 @@
 // deno-lint-ignore-file no-explicit-any
-import { r } from './deps.ts'
 import type { Config, Event, EventBus, EventHandler } from '../mod.ts'
 import { ArgumentError, EventHandlerError, InitError, NetworkError } from "../mod.ts"
 import { parseUri } from '../uri.ts'
+import { r } from './deps.ts'
 import type * as i from './mod.ts'
 
 export interface EventBusRedisConfig {
@@ -138,36 +138,68 @@ export class EventBusRedis implements EventBus {
     }
   
     this.running = false
-    this.interval = setInterval(async () => {
-      // only executes if there is streams for this EventBusRedis.
-      // in other words, no need to execute when it's a publisher only
-      if(!streams || streams.length == 0) {
+    // _poll must never reject the interval callback (an unhandled rejection
+    // from setInterval crashes the whole Deno process) — belt-and-braces on
+    // top of the guards inside _poll itself.
+    this.interval = setInterval(() => {
+      this._poll(config, streams, name, instance).catch(async (error: Error | any) => {
         this.running = false
+        const nerror = new NetworkError({ producer: name, instance, message: error.message, stack: `${error.stack}` })
+        if(config.error) {
+          await config.error(nerror)
+            .catch(err => {
+              config.log?.error({ msg: 'config error caught', message: err.message, stack: err.stack })
+            })
+        }
+      })
+    }, 500)
+  }
+
+  private async _poll(config: Config, streams: r.XKeyIdGroup[], name: string, instance: string): Promise<void> {
+    // only executes if there is streams for this EventBusRedis.
+    // in other words, no need to execute when it's a publisher only
+    if(!streams || streams.length == 0) {
+      this.running = false
+      return
+    }
+
+    if(this.running) {
+      return
+    }
+
+    // indicates that it's still running
+    // avoids stacking multiples runs due to setInterval
+    this.running = true
+
+    const producer = config.producer
+
+    try {
+      let result
+      try {
+        result = await this.credis?.xreadgroup(streams, { group: name, consumer: instance })
+      }
+      catch(error: Error | any) {
+        const nerror = new NetworkError({ producer: name, instance, message: error.message, stack: `${error.stack}` })
+        if(config.error)
+          await config.error(nerror)
         return
       }
-      
-      if(this.running) {
-        return;
-      }
 
-      // indicates that it's still running
-      // avoids stacking multiples runs due to setInterval
-      this.running = true
-
-      const result = await this.credis?.xreadgroup(streams, { group: name, consumer: instance })
       if(!result || result.length == 0) {
         // no message to read... sleep
-        this.running = false
-        return 
+        return
       }
 
-      try {
-        for(const reply of result) {
-          const stream = reply.key
-          const messages = reply.messages
+      for(const reply of result) {
+        const stream = reply.key
+        const messages = reply.messages
 
-          const handleError = async (args: { message: string, producer?: string, event?: Event, stack?: string }) => {
-            const { message, event, stack } = args
+        // never throws: a broken errorHandler is reported via config.error and
+        // swallowed, so a single DLQ failure can never escape _poll and crash
+        // the process.
+        const handleError = async (args: { message: string, producer?: string, event?: Event, stack?: string }) => {
+          const { message, event, stack } = args
+          try {
             if(config.errorHandler) {
               await config.errorHandler(new EventHandlerError({
                 message,
@@ -178,46 +210,68 @@ export class EventBusRedis implements EventBus {
               }))
             }
           }
+          catch(error: Error | any) {
+            if(config.error) {
+              await config.error(new NetworkError({ producer: name, instance, message: error.message, stack: `${error.stack}` }))
+                .catch(err => {
+                  config.log?.error({ msg: 'config error caught', message: err.message, stack: err.stack })
+                })
+            }
+          }
+        }
 
-          for(const message of messages) {
-            const ack = async () => {
+        for(const message of messages) {
+          // never throws: a failed ack is reported via config.error and
+          // swallowed — the message simply redelivers on the next poll rather
+          // than crashing the process.
+          const ack = async () => {
+            try {
               await this.credis?.xack(stream, name, message.xid)
             }
+            catch(error: Error | any) {
+              if(config.error) {
+                await config.error(new NetworkError({ producer: name, instance, message: error.message, stack: `${error.stack}` }))
+                  .catch(err => {
+                    config.log?.error({ msg: 'errorhandler thrown error', message: err.message, stack: err.stack })
+                  })
+              }
+            }
+          }
 
+          // decode -> validate -> dispatch as one guarded unit: any throw (a
+          // malformed payload, a synchronously-throwing handler, ...) is
+          // routed to handleError instead of escaping _poll — a poison
+          // message must never block or kill the stream. The message is
+          // always acked on the way out via `finally`.
+          try {
             const content = message.fieldValues['content']
             if(content == null) {
               await handleError({ message: 'message.content.required' })
-              await ack()
               continue
             }
 
-            const event = config.decode ? 
+            const event = config.decode ?
               await config.decode(content):
               JSON.parse(content) as Event
 
             if(!event) {
               await handleError({ message: 'event.required' })
-              await ack()
               continue
             }
             if(!event.type) {
               await handleError({ message: 'event.type.required', event })
-              await ack()
               continue
             }
             if(!event.sid) {
               await handleError({ message: 'event.sid.required'})
-              await ack()
               continue
             }
             if(!event.id) {
               await handleError({ message: 'event.id.required', event })
-              await ack()
-              continue;
+              continue
             }
             if(!event.ts) {
               await handleError({ message: 'event.ts.required', event })
-              await ack()
               continue
             }
 
@@ -225,7 +279,6 @@ export class EventBusRedis implements EventBus {
             if(!handler) {
               if(config.log)
                 config.log.trace({ msg: `no handler for event: ${event.type}` })
-              await ack()
               continue
             }
 
@@ -233,20 +286,25 @@ export class EventBusRedis implements EventBus {
               config.log.trace({ msg: 'exec handler', stream, instance, handler: handler.constructor.name, event })
             }
 
-            await handler.handle(event)
-              .catch(async (err: Error) => {
-                await handleError({ message: err.message, stack: `${err.stack}`, event })
-              })
-              .finally(async () => {
-                await ack()
-              })
-          } // !for message
-        } // !for stream
-      }
-      finally {
-        this.running = false
-      }
-    }, 500)
+            try {
+              await handler.handle(event)
+            }
+            catch(error: Error | any) {
+              await handleError({ message: `${error?.message ?? error}`, stack: `${error?.stack}`, event })
+            }
+          }
+          catch(error: Error | any) {
+            await handleError({ message: `${error?.message ?? error}`, stack: `${error?.stack}` })
+          }
+          finally {
+            await ack()
+          }
+        } // !for message
+      } // !for stream
+    }
+    finally {
+      this.running = false
+    }
   }
 
   _sleep(ms: number): Promise<void> {
