@@ -131,6 +131,37 @@ the implementation — **do not "simplify" them away**:
    consumer works even before the remote producer has started. "Already exists"
    errors are tolerated (`_alreadyExists`).
 
+6. **Consumer-group membership is session-scoped — rejoin after every
+   reconnect.** The apache-iggy client reconnects transparently (5s interval,
+   12 retries) on a dropped TCP connection, but the Iggy **server** binds group
+   membership to that session's `client_id`; disconnect makes the server leave
+   every group the client had joined. `init()` only joins once, so a silent
+   reconnect left every subsequent `poll`/`offset.store` failing forever with
+   `ConsumerGroupMemberNotFound` — the bus looked "stuck" with no recovery path.
+   Fixed (0.2.4) by detecting the error in both the poll and commit catch blocks
+   (`_memberNotFound`) and calling `_ensureGroup` again to rejoin before the next
+   cycle. **The 0.8.0 client's error table is also stale**: server code `5006`
+   is `ConsumerGroupMemberNotFound`, but the client renders it as `"Invalid file
+   size"` (an old STORAGE-range code) — match on the numeric `code:` in the
+   message, never the text.
+
+7. **The `Client` is a connection pool (`generic-pool`, default min 1 / max
+   4), not a single socket — cap it at `poolSize: { min: 1, max: 1 }`.**
+   Discovered while verifying fix #6: forcing eviction of the live pooled
+   connection sometimes let the pool briefly hold *two* live connections
+   (the min-1 replenishment racing an on-demand `acquire()`). Each logs in as
+   its own `client_id` and can each independently `group.join` — but a
+   single-partition group only ever assigns the partition to ONE member.
+   Whichever pooled connection `offset.store()` happened to land on, if it
+   wasn't the member holding the partition, failed **forever** with `3022`
+   (`NotResolvedConsumer` — again mismapped by the client to the generic
+   `"error"` string), while `poll()` on the other connection kept succeeding
+   and redelivering the same message. So a naive `_memberNotFound` rejoin
+   alone converts "stuck forever, zero throughput" into "unbounded
+   redelivery of one message, offset never commits" — capping the pool to
+   exactly one connection is what actually makes "one bus instance = one
+   group member" hold.
+
 ### Iggy config (`EventBusIggyConfig`)
 
 `uri` (required) — `tcp://[user:pass@]host[:port]`; `tls://` selects TLS,

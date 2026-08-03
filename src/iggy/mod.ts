@@ -124,6 +124,19 @@ export class EventBusIggy implements EventBus {
         transport: this.transport,
         options: { host: this.host, port: this.port } as any,
         credentials: { username: this.username, password: this.password },
+        // Pin the pool to exactly one connection. apache-iggy's Client is
+        // backed by a generic-pool (default min 1 / max 4); a single Iggy
+        // partition assigns ownership to whichever client_id is a group
+        // member, and if the pool ever concurrently creates a second
+        // connection (e.g. right after the eviction that _memberNotFound
+        // recovers from) that second connection joins as a SECOND member
+        // that never gets the partition — every offset.store() routed to it
+        // then fails forever with 3022 NotResolvedConsumer, even though
+        // poll() (landing on the member that does own the partition) keeps
+        // succeeding and redelivering the same message. Capping max:1 makes
+        // "one bus instance = one group member" an actual invariant instead
+        // of a comment.
+        poolSize: { min: 1, max: 1 },
       })
       // producer setup: ensure our own stream + topic exist so we can publish.
       // The first command (stream.get) lazily connects + authenticates and so
@@ -246,6 +259,23 @@ export class EventBusIggy implements EventBus {
           })
         }
         catch(error: Error | any) {
+          // The apache-iggy client reconnects transparently, but consumer-group
+          // membership is bound to the server-side client_id (the TCP session):
+          // on disconnect the server drops this client from every group it had
+          // joined. The new session was never joined, so poll/store-offset fail
+          // with 5006 ConsumerGroupMemberNotFound forever. Rejoin so the next
+          // cycle resumes.
+          if(this._memberNotFound(error)) {
+            try {
+              await this._ensureGroup(stream, group)
+              config.log?.warn({ msg: 'rejoined consumer group after reconnect', stream, group })
+            }
+            catch(rejoin: Error | any) {
+              if(config.error)
+                await config.error(this._network(rejoin))
+            }
+            continue
+          }
           const nerror = new NetworkError({ producer, instance: instance!, message: error.message, stack: `${error.stack}` })
           if(config.error)
             await config.error(nerror)
@@ -274,6 +304,19 @@ export class EventBusIggy implements EventBus {
               })
             }
             catch(error: Error | any) {
+              // Same session-scoped membership loss as the poll path; the offset
+              // stays uncommitted, so the message simply redelivers.
+              if(this._memberNotFound(error)) {
+                try {
+                  await this._ensureGroup(stream, group)
+                  config.log?.warn({ msg: 'rejoined consumer group after reconnect', stream, group })
+                }
+                catch(rejoin: Error | any) {
+                  if(config.error)
+                    await config.error(this._network(rejoin))
+                }
+                return
+              }
               if(config.error) {
                 await config.error(this._network(error))
                   .catch(err => {
@@ -425,6 +468,16 @@ export class EventBusIggy implements EventBus {
   private _alreadyExists(error: Error | any): boolean {
     const msg = `${error?.message ?? error}`.toLowerCase()
     return msg.includes('already exists') || msg.includes('already_exists') || msg.includes('already a member')
+  }
+
+  /**
+   * Server error 5006 = ConsumerGroupMemberNotFound. The apache-iggy 0.8.0 error
+   * table is stale and renders it as "Invalid file size" (an old STORAGE code),
+   * and the thrown value is a plain Error with no `code` field — so match the
+   * numeric code in the formatted message, never the text.
+   */
+  private _memberNotFound(error: Error | any): boolean {
+    return /\{\s*code:\s*5006\s*[,}]/.test(`${error?.message ?? error}`)
   }
 
   private _network(error: Error | any): NetworkError {
